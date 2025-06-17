@@ -1,0 +1,102 @@
+/* Navbar Styles */
+.navbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid #e5e7eb;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  height: 60px;
+  box-sizing: border-box;
+}
+
+/* Light Theme */
+.navbar.light {
+  background-color: #fffbeb; /* amber-50 */
+  color: #1f2937; /* gray-900 */
+  border-color: #fde68a; /* amber-200 */
+}
+
+/* Dark Theme */
+.navbar.dark {
+  background-color: #111827; /* gray-900 */
+  color: #ffffff;
+  border-color: #374151; /* gray-700 */
+}
+
+/* Left side - User info */
+.navbar-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background-color: #6b7280; /* gray-500 */
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.user-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* Center - Title */
+.navbar-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  flex-grow: 1;
+  text-align: center;
+  padding: 0 20px;
+}
+
+/* Right side - Actions */
+.navbar-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.icon-button {
+  background: none;
+  border: none;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.light .icon-button {
+  color: #4b5563; /* gray-600 */
+}
+
+.dark .icon-button {
+  color: #d1d5db; /* gray-300 */
+}
+
+.light .icon-button:hover {
+  background-color: #fef3c7; /* amber-100 */
+}
+
+.dark .icon-button:hover {
+  background-color: #374151; /* gray-700 */
+}
+
+.icon-button svg {
+  width: 18px;
+  height: 18px;
+}

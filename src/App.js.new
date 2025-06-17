@@ -1,0 +1,627 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { ThemeProvider } from './contexts/ThemeContext';
+import { TaskProvider } from './contexts/TaskContext';
+import Navbar from './components/Navbar';
+import SettingsPage from './components/SettingsPage';
+import { Keyboard, MousePointerClick } from 'lucide-react';
+import { CSSTransition } from 'react-transition-group';
+import './App.css';
+import './styles/animations.css';
+
+// Key code mappings for display
+const KEY_CODES = {
+  8: 'Backspace', 9: 'Tab', 13: 'Enter', 16: 'Shift', 17: 'Ctrl', 18: 'Alt',
+  19: 'Pause', 20: 'Caps Lock', 27: 'Escape', 32: 'Space', 33: 'Page Up',
+  34: 'Page Down', 35: 'End', 36: 'Home', 37: 'Left Arrow', 38: 'Up Arrow',
+  39: 'Right Arrow', 40: 'Down Arrow', 45: 'Insert', 46: 'Delete',
+  48: '0', 49: '1', 50: '2', 51: '3', 52: '4', 53: '5', 54: '6', 55: '7', 56: '8', 57: '9',
+  65: 'A', 66: 'B', 67: 'C', 68: 'D', 69: 'E', 70: 'F', 71: 'G', 72: 'H', 73: 'I',
+  74: 'J', 75: 'K', 76: 'L', 77: 'M', 78: 'N', 79: 'O', 80: 'P', 81: 'Q', 82: 'R',
+  83: 'S', 84: 'T', 85: 'U', 86: 'V', 87: 'W', 88: 'X', 89: 'Y', 90: 'Z',
+  112: 'F1', 113: 'F2', 114: 'F3', 115: 'F4', 116: 'F5', 117: 'F6',
+  118: 'F7', 119: 'F8', 120: 'F9', 121: 'F10', 122: 'F11', 123: 'F12'
+};
+
+function App() {
+  // Form Selections State
+  const [selections, setSelections] = useState({
+    project: '',
+    task: '',
+    subtask: '',
+    action: '',
+    subaction: ''
+  });
+
+  // UI State
+  const [showTracker, setShowTracker] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Timer State
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const timerRef = useRef(null);
+
+  // Tracking State
+  const [isTracking, setIsTracking] = useState(false);
+  const [events, setEvents] = useState([]);
+  const eventsEndRef = useRef(null);
+
+  // Project Data State
+  const [projects, setProjects] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  // Electron/API State
+  const [isElectron, setIsElectron] = useState(false);
+  const [apiReady, setApiReady] = useState(false);
+  const [screenshotInterval, setScreenshotInterval] = useState(null);
+  const [lastScreenshot, setLastScreenshot] = useState(null);
+  const maxEvents = 1000;
+
+  // Function to fetch projects from database using Electron's IPC
+  const fetchProjects = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      if (window.electronAPI) {
+        const result = await window.electronAPI.getProjects();
+        if (result.success) {
+          const projectsMap = {};
+          result.projects.forEach(project => {
+            projectsMap[project.name] = {};
+          });
+          setProjects(projectsMap);
+          return true;
+        } else {
+          setError(result.error || 'Failed to load projects');
+          return false;
+        }
+      } else {
+        setError('Electron API not available');
+        return false;
+      }
+    } catch (err) {
+      console.error('Error fetching projects:', err);
+      setError('Failed to load projects');
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Fetch projects on component mount
+  useEffect(() => {
+    fetchProjects();
+  }, []);
+
+  // Function to manually refresh projects
+  const refreshProjects = async () => {
+    const success = await fetchProjects();
+    if (success) {
+      // Reset selections after refresh
+      setSelections({
+        project: '',
+        task: '',
+        subtask: '',
+        action: '',
+        subaction: ''
+      });
+    }
+  };
+
+  const startTimer = async () => {
+    if (!timerRunning) {
+      setShowTracker(true);
+      setTimerRunning(true);
+      const startTime = Date.now() - elapsedTime;
+      timerRef.current = setInterval(() => {
+        setElapsedTime(Date.now() - startTime);
+      }, 1000);
+
+      // Start tracking
+      if (!isTracking) {
+        try {
+          await handleStartTracking();
+        } catch (err) {
+          setError(`Failed to start tracking: ${err.message}`);
+          stopTimer();
+        }
+      }
+    }
+  };
+
+  const stopTimer = async () => {
+    clearInterval(timerRef.current);
+    setTimerRunning(false);
+
+    // Pause tracking but stay on timer page
+    if (isTracking) {
+      try {
+        await handlePauseTracking();
+      } catch (err) {
+        setError(`Failed to pause tracking: ${err.message}`);
+      }
+    }
+  };
+
+  const pauseTimer = async () => {
+    clearInterval(timerRef.current);
+    setTimerRunning(false);
+
+    // Pause tracking but stay on timer page
+    if (isTracking) {
+      try {
+        await handlePauseTracking();
+      } catch (err) {
+        setError(`Failed to pause tracking: ${err.message}`);
+      }
+    }
+  };
+
+  const resetTimerAndBackToSelection = async () => {
+    // Stop the timer and tracking
+    clearInterval(timerRef.current);
+    setTimerRunning(false);
+    setShowTracker(false);  // This will take us back to the selection page
+
+    // Reset timer and stats
+    setElapsedTime(0);
+    setEvents([]);
+
+    // Stop tracking if it's active
+    if (isTracking) {
+      try {
+        await handleStopTracking();
+      } catch (err) {
+        setError(`Failed to stop tracking: ${err.message}`);
+      }
+    }
+  };
+
+  // Format time for display
+  const formatTime = (milliseconds) => {
+    const totalSeconds = Math.floor(milliseconds / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  };
+
+  // Handle selection changes
+  const handleSelectionChange = (level, value) => {
+    setSelections(prev => {
+      const newSelections = { ...prev, [level]: value };
+      // Clear all dependent selections when a parent changes
+      const levels = ['project', 'task', 'subtask', 'action', 'subaction'];
+      const currentIndex = levels.indexOf(level);
+      levels.slice(currentIndex + 1).forEach(l => {
+        newSelections[l] = '';
+      });
+      return newSelections;
+    });
+  };
+
+  // Get available options based on current selections
+  const getOptions = (level) => {
+    const levels = ['project', 'task', 'subtask', 'action', 'subaction'];
+    const levelIndex = levels.indexOf(level);
+    
+    if (levelIndex === -1) return [];
+    
+    // For now, return some dummy data
+    // In a real app, you would fetch this from your API based on parent selections
+    const options = {
+      task: ['Task 1', 'Task 2', 'Task 3'],
+      subtask: ['Subtask A', 'Subtask B', 'Subtask C'],
+      action: ['Action 1', 'Action 2', 'Action 3'],
+      subaction: ['Subaction X', 'Subaction Y', 'Subaction Z']
+    };
+    
+    return options[level] || [];
+  };
+
+  // Calculate stats from events array
+  const stats = useMemo(() => {
+    const calculatedStats = { mouseClicks: 0, keyPresses: 0, mouseMoves: 0 };
+    events.forEach(event => {
+      if (event.type === 'mouseclick') calculatedStats.mouseClicks++;
+      else if (event.type === 'keydown') calculatedStats.keyPresses++;
+      else if (event.type === 'mousemove') calculatedStats.mouseMoves++;
+    });
+    return calculatedStats;
+  }, [events]);
+
+  // Set up event listeners for Electron IPC
+  useEffect(() => {
+    const isElectron = window.electron !== undefined;
+    setIsElectron(isElectron);
+    
+    if (isElectron && window.electronAPI) {
+      setApiReady(true);
+    }
+
+    const handleGlobalEvent = (data) => {
+      setEvents(prevEvents => {
+        const newEvents = [...prevEvents, data];
+        if (newEvents.length > maxEvents) {
+          newEvents.shift();
+        }
+        return newEvents;
+      });
+    };
+
+    if (window.electronAPI) {
+      const cleanup = window.electronAPI.onGlobalEvent(handleGlobalEvent);
+      return () => {
+        if (typeof cleanup === 'function') cleanup();
+        else if (window.electronAPI?.removeGlobalEventListener) {
+          window.electronAPI.removeGlobalEventListener(handleGlobalEvent);
+        }
+      };
+    }
+  }, [maxEvents]);
+
+  // Set up tracking status listener
+  useEffect(() => {
+    if (!isElectron || !window.electronAPI) return;
+
+    const cleanupTrackingStatus = window.electronAPI.onTrackingStatus((data) => {
+      setIsTracking(data.isTracking);
+    });
+
+    const cleanupTrackingError = window.electronAPI.onTrackingError((data) => {
+      setError(data.error);
+    });
+
+    // Initial status check
+    window.electronAPI.getTrackingStatus().then((status) => {
+      setIsTracking(status.isTracking);
+    });
+
+    return () => {
+      cleanupTrackingStatus();
+      cleanupTrackingError();
+    };
+  }, [isElectron]);
+
+  // Auto-scroll events list
+  useEffect(() => {
+    if (eventsEndRef.current) {
+      const eventsContainer = eventsEndRef.current.parentElement;
+      if (eventsContainer) {
+        eventsContainer.scrollTop = eventsContainer.scrollHeight;
+      }
+    }
+  }, [events]);
+
+  const handleStartTracking = async () => {
+    try {
+      const result = await window.electronAPI.startTracking();
+      if (result.success) {
+        setError(null);
+      }
+    } catch (err) {
+      setError(`Failed to start tracking: ${err.message}`);
+    }
+  };
+
+  const handlePauseTracking = async () => {
+    try {
+      const result = await window.electronAPI.stopTracking();
+      if (result.success) {
+        setError(null);
+      }
+    } catch (err) {
+      setError(`Failed to pause tracking: ${err.message}`);
+    }
+  };
+
+  const handleStopTracking = async () => {
+    try {
+      const result = await window.electronAPI.stopTracking();
+      if (result.success) {
+        setError(null);
+      }
+    } catch (err) {
+      setError(`Failed to stop tracking: ${err.message}`);
+    }
+  };
+
+  const clearEvents = () => {
+    setEvents([]);
+  };
+
+  const formatEvent = (event) => {
+    const time = new Date(event.timestamp).toLocaleTimeString();
+
+    switch (event.type) {
+      case 'mouseclick':
+        const buttonName = event.button === 1 ? 'Left' :
+          event.button === 2 ? 'Right' :
+          event.button === 3 ? 'Middle' : 'Unknown';
+        return `${time} - Mouse ${buttonName} Click at (${event.x}, ${event.y})`;
+
+      case 'mousemove':
+        return `${time} - Mouse Move to (${event.x}, ${event.y})`;
+
+      case 'keydown':
+        const keyName = KEY_CODES[event.keycode] || `Key[${event.keycode}]`;
+        return `${time} - Key Down: ${keyName}`;
+
+      default:
+        return `${time} - ${event.type}: ${JSON.stringify(event)}`;
+    }
+  };
+
+  const handleSettingsClick = () => {
+    setShowSettings(prev => !prev);
+  };
+
+  const handleBackFromSettings = () => {
+    setShowSettings(false);
+  };
+
+  const handleQuitClick = () => {
+    if (window.electron) {
+      window.electron.quitApp();
+    } else {
+      console.log('Quit clicked');
+    }
+  };
+
+  const renderSelectionUI = () => {
+    return (
+      <div className="selection-container">
+        <div className="selection-header">
+          <h2>What are you working on?</h2>
+          <button 
+            onClick={refreshProjects} 
+            className="refresh-button"
+            disabled={loading}
+            title="Refresh projects"
+          >
+            {loading ? 'Refreshing...' : '↻'}
+          </button>
+        </div>
+        <div className="dropdown-group">
+          <select
+            value={selections.project}
+            onChange={(e) => handleSelectionChange('project', e.target.value)}
+            disabled={loading}
+          >
+            <option value="">{loading ? 'Loading...' : 'Select a project'}</option>
+            {Object.keys(projects).map(project => (
+              <option key={project} value={project}>
+                {project}
+              </option>
+            ))}
+          </select>
+
+          {selections.project && (
+            <select
+              value={selections.task}
+              onChange={(e) => handleSelectionChange('task', e.target.value)}
+              className="dropdown"
+            >
+              <option value="">Select Task</option>
+              {getOptions('task').map(task => (
+                <option key={task} value={task}>{task}</option>
+              ))}
+            </select>
+          )}
+
+          {selections.task && (
+            <select
+              value={selections.subtask}
+              onChange={(e) => handleSelectionChange('subtask', e.target.value)}
+              className="dropdown"
+            >
+              <option value="">Select Subtask</option>
+              {getOptions('subtask').map(subtask => (
+                <option key={subtask} value={subtask}>{subtask}</option>
+              ))}
+            </select>
+          )}
+
+          {selections.subtask && (
+            <select
+              value={selections.action}
+              onChange={(e) => handleSelectionChange('action', e.target.value)}
+              className="dropdown"
+            >
+              <option value="">Select Action</option>
+              {getOptions('action').map(action => (
+                <option key={action} value={action}>{action}</option>
+              ))}
+            </select>
+          )}
+
+          {selections.action && (
+            <select
+              value={selections.subaction}
+              onChange={(e) => handleSelectionChange('subaction', e.target.value)}
+              className="dropdown"
+            >
+              <option value="">Select Subaction</option>
+              {getOptions('subaction').map(subaction => (
+                <option key={subaction} value={subaction}>{subaction}</option>
+              ))}
+            </select>
+          )}
+
+          <button
+            onClick={startTimer}
+            disabled={!selections.project || !selections.task}
+            className="start-timer-btn"
+          >
+            Start Timer
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderTimerUI = () => {
+    const isDarkMode = document.body.classList.contains('dark-theme');
+
+    return (
+      <div className="tracker-container">
+        <button
+          onClick={resetTimerAndBackToSelection}
+          className="back-button"
+          title="Go back to selection"
+        >
+          Back
+        </button>
+        <div className="timer-display">
+          <h2>Time Tracking {!timerRunning && isTracking ? '(Paused)' : ''}</h2>
+          <div className={`time ${!timerRunning && isTracking ? 'paused' : ''}`}>
+            {formatTime(elapsedTime)}
+          </div>
+
+          {/* Activity Metrics */}
+          <div className="activity-metrics">
+            <h3 className="metrics-title">Activity Metrics</h3>
+            <div className="metrics-grid">
+              <div className={`metric-card ${isDarkMode ? 'keyboard-dark' : 'keyboard-light'}`}>
+                <div className={`metric-icon ${isDarkMode ? 'keyboard-icon-dark' : 'keyboard-icon-light'}`}>
+                  <Keyboard className="metric-svg" />
+                </div>
+                <div className="metric-details">
+                  <p className="metric-label">Keystrokes</p>
+                  <p className={`metric-value ${isDarkMode ? 'keyboard-text-dark' : 'keyboard-text-light'}`}>
+                    {stats.keyPresses || 0}
+                  </p>
+                </div>
+              </div>
+
+              <div className={`metric-card ${isDarkMode ? 'mouse-dark' : 'mouse-light'}`}>
+                <div className={`metric-icon ${isDarkMode ? 'mouse-icon-dark' : 'mouse-icon-light'}`}>
+                  <MousePointerClick className="metric-svg" />
+                </div>
+                <div className="metric-details">
+                  <p className="metric-label">Mouse Clicks</p>
+                  <p className={`metric-value ${isDarkMode ? 'mouse-text-dark' : 'mouse-text-light'}`}>
+                    {stats.mouseClicks || 0}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="selection-info">
+            <p>
+              {[
+                selections.project,
+                selections.task,
+                selections.subtask,
+                selections.action,
+                selections.subaction
+              ]
+                .filter(Boolean)
+                .map((item, index, array) => (
+                  <span key={index}>
+                    <strong>{item}</strong>
+                    {index < array.length - 1 && ' → '}
+                  </span>
+                ))}
+            </p>
+          </div>
+        </div>
+
+        <div className="controls">
+          {timerRunning ? (
+            <button
+              onClick={pauseTimer}
+              className="stop-btn"
+              disabled={!!error && error.includes('Electron API not available')}
+            >
+              Pause
+            </button>
+          ) : (
+            <button
+              onClick={startTimer}
+              className="start-btn"
+              disabled={!!error && error.includes('Electron API not available')}
+            >
+              Resume
+            </button>
+          )}
+
+          <button
+            onClick={resetTimerAndBackToSelection}
+            className="reset-all-btn"
+            disabled={!isTracking && events.length === 0}
+          >
+            Punch Out
+          </button>
+        </div>
+
+        {error && (
+          <div className="error">
+            <strong>⚠️ Error:</strong> {error}
+          </div>
+        )}
+
+        {/* Last Screenshot Section */}
+        <div className="screenshot-section">
+          <div className="screenshot-card">
+            <h3>📸 Last Screenshot</h3>
+            <div className="screenshot-container">
+              {lastScreenshot ? (
+                <img
+                  src={`file://${lastScreenshot.path}`}
+                  alt="Last screenshot"
+                  className="screenshot-image"
+                />
+              ) : (
+                <p className="no-screenshot">No screenshot available</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <ThemeProvider>
+      <TaskProvider>
+        <div className="app">
+          <Navbar
+            title={showSettings ? 'Settings' : (showTracker ? 'Timer' : 'Selection')}
+            onSettingsClick={handleSettingsClick}
+            onQuitClick={handleQuitClick}
+          />
+
+          <CSSTransition
+            in={!showSettings}
+            timeout={300}
+            classNames="slide"
+            unmountOnExit
+          >
+            <div className="main-content">
+              {!showTracker ? renderSelectionUI() : renderTimerUI()}
+            </div>
+          </CSSTransition>
+
+          <CSSTransition
+            in={showSettings}
+            timeout={300}
+            classNames="slide"
+            unmountOnExit
+          >
+            <div className="settings-container">
+              <SettingsPage
+                onBackClick={handleBackFromSettings}
+                onQuitClick={handleQuitClick}
+              />
+            </div>
+          </CSSTransition>
+        </div>
+      </TaskProvider>
+    </ThemeProvider>
+  );
+}
+
+export default App;

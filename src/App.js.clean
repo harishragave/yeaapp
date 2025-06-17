@@ -1,0 +1,354 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { ThemeProvider } from './contexts/ThemeContext';
+import { TaskProvider } from './contexts/TaskContext';
+import Navbar from './components/Navbar';
+import SettingsPage from './components/SettingsPage';
+import { CSSTransition } from 'react-transition-group';
+import './App.css';
+import './styles/animations.css';
+import { Keyboard, MousePointerClick } from 'lucide-react';
+
+// Key code mappings for display
+const KEY_CODES = {
+  8: 'Backspace', 9: 'Tab', 13: 'Enter', 16: 'Shift', 17: 'Ctrl', 18: 'Alt',
+  19: 'Pause', 20: 'Caps Lock', 27: 'Escape', 32: 'Space', 33: 'Page Up',
+  34: 'Page Down', 35: 'End', 36: 'Home', 37: 'Left Arrow', 38: 'Up Arrow',
+  39: 'Right Arrow', 40: 'Down Arrow', 45: 'Insert', 46: 'Delete',
+  48: '0', 49: '1', 50: '2', 51: '3', 52: '4', 53: '5', 54: '6', 55: '7', 56: '8', 57: '9',
+  65: 'A', 66: 'B', 67: 'C', 68: 'D', 69: 'E', 70: 'F', 71: 'G', 72: 'H', 73: 'I',
+  74: 'J', 75: 'K', 76: 'L', 77: 'M', 78: 'N', 79: 'O', 80: 'P', 81: 'Q', 82: 'R',
+  83: 'S', 84: 'T', 85: 'U', 86: 'V', 87: 'W', 88: 'X', 89: 'Y', 90: 'Z',
+  112: 'F1', 113: 'F2', 114: 'F3', 115: 'F4', 116: 'F5', 117: 'F6',
+  118: 'F7', 119: 'F8', 120: 'F9', 121: 'F10', 122: 'F11', 123: 'F12'
+};
+
+function App() {
+  // Form Selections State
+  const [selections, setSelections] = useState({
+    project: '',
+    task: '',
+    subtask: '',
+    action: '',
+    subaction: ''
+  });
+
+  // UI State
+  const [showTracker, setShowTracker] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  
+  // Timer State
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const timerRef = useRef(null);
+  
+  // Tracking State
+  const [isTracking, setIsTracking] = useState(false);
+  const [events, setEvents] = useState([]);
+  const eventsEndRef = useRef(null);
+  
+  // Project Data State
+  const [projects, setProjects] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  
+  // Electron/API State
+  const [isElectron, setIsElectron] = useState(false);
+  const [apiReady, setApiReady] = useState(false);
+  const [screenshotInterval, setScreenshotInterval] = useState(null);
+  const [lastScreenshot, setLastScreenshot] = useState(null);
+  const maxEvents = 1000;
+
+  // Check if running in Electron
+  useEffect(() => {
+    setIsElectron(window && window.electronAPI);
+  }, []);
+
+  // Fetch projects from database using Electron's IPC
+  useEffect(() => {
+    const fetchProjects = async () => {
+      try {
+        setLoading(true);
+        if (window.electronAPI) {
+          const result = await window.electronAPI.getProjects();
+          if (result.success) {
+            // Transform the flat projects array into the nested structure expected by the UI
+            const projectsMap = {};
+            result.projects.forEach(project => {
+              if (!projectsMap[project.name]) {
+                projectsMap[project.name] = {};
+              }
+              // You can add more logic here to handle tasks, subtasks, etc.
+              // For now, we'll just add an empty object as a placeholder
+              projectsMap[project.name] = {};
+            });
+            setProjects(projectsMap);
+          } else {
+            setError(result.error || 'Failed to load projects');
+          }
+        } else {
+          setError('Electron API not available');
+        }
+      } catch (err) {
+        console.error('Error fetching projects:', err);
+        setError('Failed to load projects');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchProjects();
+  }, []);
+
+  // Timer control functions
+  const startTimer = async () => {
+    if (!timerRunning) {
+      setShowTracker(true);
+      setTimerRunning(true);
+      const startTime = Date.now() - elapsedTime;
+      timerRef.current = setInterval(() => {
+        setElapsedTime(Date.now() - startTime);
+      }, 1000);
+
+      // Start tracking
+      if (!isTracking) {
+        try {
+          await handleStartTracking();
+        } catch (err) {
+          setError(`Failed to start tracking: ${err.message}`);
+          stopTimer();
+        }
+      }
+    }
+  };
+
+  const stopTimer = async () => {
+    clearInterval(timerRef.current);
+    setTimerRunning(false);
+  
+    // Pause tracking but stay on timer page
+    if (isTracking) {
+      try {
+        await handlePauseTracking();
+      } catch (err) {
+        setError(`Failed to pause tracking: ${err.message}`);
+      }
+    }
+  };
+  
+  const pauseTimer = async () => {
+    clearInterval(timerRef.current);
+    setTimerRunning(false);
+    
+    // Pause tracking but stay on timer page
+    if (isTracking) {
+      try {
+        await handlePauseTracking();
+      } catch (err) {
+        setError(`Failed to pause tracking: ${err.message}`);
+      }
+    }
+  };
+
+  const resetTimerAndBackToSelection = async () => {
+    // Stop the timer and tracking
+    clearInterval(timerRef.current);
+    setTimerRunning(false);
+    setShowTracker(false);
+
+    // Reset timer and stats
+    setElapsedTime(0);
+    setEvents([]);
+
+    // Stop tracking if it's active
+    if (isTracking) {
+      try {
+        await handleStopTracking();
+      } catch (err) {
+        setError(`Failed to stop tracking: ${err.message}`);
+      }
+    }
+  };
+
+  // Format time for display
+  const formatTime = (milliseconds) => {
+    const totalSeconds = Math.floor(milliseconds / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  };
+
+  // Handle selection changes
+  const handleSelectionChange = (level, value) => {
+    setSelections(prev => {
+      const newSelections = { ...prev, [level]: value };
+      // Clear all dependent selections when a parent changes
+      const levels = ['project', 'task', 'subtask', 'action', 'subaction'];
+      const currentIndex = levels.indexOf(level);
+      levels.slice(currentIndex + 1).forEach(l => {
+        newSelections[l] = '';
+      });
+      return newSelections;
+    });
+  };
+
+  // Get available options based on current selections
+  const getOptions = (level) => {
+    switch (level) {
+      case 'project':
+        return Object.keys(projects);
+      case 'task':
+        return selections.project ? Object.keys(projects[selections.project] || {}) : [];
+      case 'subtask':
+        return (selections.project && selections.task)
+          ? Object.keys(projects[selections.project]?.[selections.task] || {})
+          : [];
+      case 'action':
+        return (selections.project && selections.task && selections.subtask)
+          ? Object.keys(projects[selections.project]?.[selections.task]?.[selections.subtask] || {})
+          : [];
+      case 'subaction':
+        return (selections.project && selections.task && selections.subtask && selections.action)
+          ? Object.keys(projects[selections.project]?.[selections.task]?.[selections.subtask]?.[selections.action] || {})
+          : [];
+      default:
+        return [];
+    }
+  };
+
+  // Handle tracking functions (to be implemented)
+  const handleStartTracking = async () => {
+    // Implementation for starting tracking
+    setIsTracking(true);
+  };
+
+  const handlePauseTracking = async () => {
+    // Implementation for pausing tracking
+    setIsTracking(false);
+  };
+
+  const handleStopTracking = async () => {
+    // Implementation for stopping tracking
+    setIsTracking(false);
+  };
+
+  // Render loading state
+  if (loading) {
+    return (
+      <div className="app-container">
+        <div className="loading-container">
+          <div className="loading-spinner"></div>
+          <p>Loading projects...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Render error state
+  if (error) {
+    return (
+      <div className="app-container">
+        <div className="error-container">
+          <h2>Error Loading Projects</h2>
+          <p>{error}</p>
+          <button onClick={() => window.location.reload()}>Retry</button>
+        </div>
+      </div>
+    );
+  }
+
+  // Main app render
+  return (
+    <ThemeProvider>
+      <TaskProvider>
+        <div className="app-container">
+          <Navbar 
+            onShowTracker={() => setShowTracker(true)}
+            onShowSettings={() => setShowSettings(true)}
+          />
+          
+          <main className="main-content">
+            {!showTracker ? (
+              // Project selection view
+              <div className="selection-container">
+                <h2>Select Project</h2>
+                <div className="form-group">
+                  <label>Project</label>
+                  <select
+                    value={selections.project}
+                    onChange={(e) => handleSelectionChange('project', e.target.value)}
+                  >
+                    <option value="">Select a project</option>
+                    {getOptions('project').map(project => (
+                      <option key={project} value={project}>{project}</option>
+                    ))}
+                  </select>
+                </div>
+                
+                {selections.project && (
+                  <div className="form-group">
+                    <label>Task</label>
+                    <select
+                      value={selections.task}
+                      onChange={(e) => handleSelectionChange('task', e.target.value)}
+                    >
+                      <option value="">Select a task</option>
+                      {getOptions('task').map(task => (
+                        <option key={task} value={task}>{task}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                
+                <button 
+                  className="start-button"
+                  onClick={startTimer}
+                  disabled={!selections.project}
+                >
+                  Start Tracking
+                </button>
+              </div>
+            ) : (
+              // Timer view
+              <div className="tracker-container">
+                <div className="timer-display">
+                  {formatTime(elapsedTime)}
+                </div>
+                
+                <div className="tracker-controls">
+                  {timerRunning ? (
+                    <>
+                      <button onClick={pauseTimer}>Pause</button>
+                      <button onClick={stopTimer}>Stop</button>
+                    </>
+                  ) : (
+                    <button onClick={startTimer}>Resume</button>
+                  )}
+                  <button onClick={resetTimerAndBackToSelection}>Cancel</button>
+                </div>
+                
+                <div className="tracker-details">
+                  <h3>Currently Tracking:</h3>
+                  <p>Project: {selections.project}</p>
+                  {selections.task && <p>Task: {selections.task}</p>}
+                  {selections.subtask && <p>Subtask: {selections.subtask}</p>}
+                </div>
+              </div>
+            )}
+          </main>
+          
+          <CSSTransition
+            in={showSettings}
+            timeout={300}
+            classNames="modal"
+            unmountOnExit
+          >
+            <SettingsPage onClose={() => setShowSettings(false)} />
+          </CSSTransition>
+        </div>
+      </TaskProvider>
+    </ThemeProvider>
+  );
+}
+
+export default App;

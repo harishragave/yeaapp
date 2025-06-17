@@ -1,0 +1,103 @@
+{
+  "name": "global-tracker-app",
+  "version": "1.0.0",
+  "author": "harish <harish62264@gmail.com>",
+  "description": "Global mouse and keyboard event tracker for Windows",
+  "main": "main.js",
+  "homepage": "./",
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "electron": "electron .",
+    "dev": "concurrently \"npm start\" \"wait-on http://localhost:3102 && electron .\"",
+    "dist": "npm run build && electron-builder --windows",
+    "postinstall": "electron-rebuild -f -w iohook"
+  },
+  "dependencies": {
+    "@radix-ui/react-switch": "^1.2.5",
+    "active-win": "^8.2.1",
+    "axios": "^1.9.0",
+    "body-parser": "^2.2.0",
+    "chokidar": "^4.0.3",
+    "cors": "^2.8.5",
+    "date-fns": "^4.1.0",
+    "electron-screenshot": "^1.0.5",
+    "fs-extra": "^11.3.0",
+    "lucide-react": "^0.511.0",
+    "mysql2": "^3.14.1",
+    "path": "^0.12.7",
+    "pm2": "^6.0.8",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.30.1",
+    "react-scripts": "5.0.1",
+    "react-transition-group": "^4.4.5",
+    "robotjs": "^0.6.0",
+    "uiohook-napi": "^1.5.4"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.2",
+    "@types/babel__core": "^7.20.5",
+    "@types/node": "^22.15.21",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^8.2.0",
+    "electron": "^27.3.11",
+    "electron-builder": "^24.6.4",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^4.1.7",
+    "typescript": "^5.8.3",
+    "wait-on": "^7.0.1"
+  },
+  "build": {
+    "appId": "com.harish.globaltracker",
+    "productName": "Global Tracker",
+    "extends": null,
+    "extraResources": [
+      "./node_modules/electron-screenshot/**/*"
+    ],
+    "files": [
+      "build/**/*",
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "assets",
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "iohook": {
+    "targets": [
+      "electron-118"
+    ],
+    "platforms": [
+      "win32"
+    ],
+    "arches": [
+      "x64"
+    ]
+  }
+}
