@@ -4,7 +4,7 @@ const { uIOhook, UiohookKey } = require('uiohook-napi');
 const { desktopCapturer, screen } = electron;
 const path = require('path');
 const fs = require('fs-extra');
-
+const axios = require('axios');
 // Verify Electron app is loaded
 if (!app) {
     console.error('Failed to load Electron app module. Make sure Electron is installed correctly.');
@@ -20,23 +20,30 @@ let lastMouseEventSent = 0;
 let mouseClickCount = 0;
 let keyboardPressCount = 0;
 
-// Set screenshot interval to 5 minutes (300,000 ms)
-const SCREENSHOT_INTERVAL = 5 * 60 * 1000;
+// Set screenshot interval to 10 minutes (600,000 ms)
+const SCREENSHOT_INTERVAL = 2 * 60 * 1000;
 let currentProjectID = null;
 let currentUserID = null;
 let currentTaskID = null;
-let currentProjectName = null;
-let currentTaskName = null;
+// let currentProjectName = null;
+// let currentTaskName = null;
+
 // Remove the original saveToWorkdiary function and replace with:
 async function saveToWorkdiary(data) {
     try {
         console.log('Saving to workdiary, thumbnailURL exists:', !!data.thumbnailURL);
         console.log('Data being sent to server:', {
-            ...data,
-            imageURL: data.imageURL ? '[IMAGE_DATA]' : 'MISSING',
-            thumbnailURL: data.thumbnailURL ? '[THUMBNAIL_DATA]' : 'MISSING',
+            projectID: data.projectID,
+            userID: data.userID,
+            taskID: data.taskID,
+            screenshotTimeStamp: data.screenshotTimeStamp,
+            calcTimeStamp: data.calcTimeStamp,
             keyboardJSON: data.keyboardJSON,
-            mouseJSON: data.mouseJSON
+            mouseJSON: data.mouseJSON,
+            activeFlag: 1,
+            deletedFlag: 0,
+            imageURL: data.imageURL.substring(0, 50) + '...',  // Show first 50 chars for debugging
+            thumbnailURL: data.thumbnailURL.substring(0, 50) + '...'  // Show first 50 chars for debugging
         });
 
         const response = await fetch('https://vw.aisrv.in/node_backend/postProjectV1', {
@@ -46,18 +53,19 @@ async function saveToWorkdiary(data) {
             },
             body: JSON.stringify({
                 projectID: data.projectID,
-                projectName: data.projectName,
-                taskName: data.taskName,
                 userID: data.userID,
                 taskID: data.taskID,
-                screenshotTimeStamp: data.screenshotTimeStamp.toISOString(),
-                calcTimeStamp: data.calcTimeStamp.toISOString(),
-                keyboardJSON: JSON.parse(data.keyboardJSON),
-                mouseJSON: JSON.parse(data.mouseJSON),
-                imageURL: data.imageURL,
-                thumbnailURL: data.thumbnailURL,
+                screenshotTimeStamp: data.screenshotTimeStamp,
+                calcTimeStamp: data.calcTimeStamp,
+                keyboardJSON: data.keyboardJSON,
+                mouseJSON: data.mouseJSON,
+                activeJSON: data.activeJSON || {},
                 activeFlag: 1,
-                deletedFlag: 0
+                activeMins: 1,
+                deletedFlag: 0,
+                activeMemo: '',
+                imageURL: data.imageURL,
+                thumbNailURL: data.thumbnailURL
             })
         });
 
@@ -72,10 +80,10 @@ async function saveToWorkdiary(data) {
         }
 
         console.log('Data saved via backend API');
-        return { 
-            success: true, 
+        return {
+            success: true,
             savedLocally: false,
-            data: await response.json() 
+            data: await response.json()
         };
     } catch (error) {
         console.error('API request failed, trying local save...', error);
@@ -95,65 +103,209 @@ async function saveToWorkdiary(data) {
         }
     }
 }
+async function processScreenshotFiles() {
+    const screenshotsDir = path.join(__dirname, 'public', 'screenshots');
 
-function getHourlyFolderName() {
-    const now = new Date();
-    const hour = now.getHours();
-    // Format as "10-11" for 10:00-10:59
-    return `${String(hour).padStart(2, '0')}-${String(hour + 1).padStart(2, '0')}`;
+    try {
+        const files = await getJsonFilesRecursively(screenshotsDir);
+        console.log('All files:', files);
+
+        for (const filePath of files) {
+            try {
+                const fileContent = await fs.readFile(filePath, 'utf8');
+                const jsonData = JSON.parse(fileContent);
+                // Get the task data file path from the task directory
+                const taskDataPath = path.join(
+                    screenshotsDir,
+                    `project_${jsonData.projectID}`,
+                    `task_${jsonData.taskID}`,
+                    `taskData_${jsonData.taskID}.json`
+                );
+                // Read task data
+                // let taskData = {};
+                try {
+                    const taskDataContent = await fs.readFile(taskDataPath, 'utf8');
+                    taskData = JSON.parse(taskDataContent);
+                } catch (error) {
+                    console.warn('Task data file not found or unreadable:', taskDataPath);
+                }
+
+                // Fixed data mapping - use activeJSON instead of activeFlag
+                const dataToSend = {
+                    projectID: jsonData.projectID,
+                    userID: jsonData.userID,
+                    taskID: jsonData.taskID,
+                    screenshotTimeStamp: jsonData.screenshotTimeStamp,
+                    calcTimeStamp: jsonData.calcTimeStamp,
+                    keyboardJSON: jsonData.keyboardJSON,
+                    mouseJSON: jsonData.mouseJSON,
+                    activeJSON: jsonData.activeJSON || {},
+                    activeFlag: jsonData.activeFlag !== undefined ? jsonData.activeFlag : 1,
+                    activeMins: jsonData.activeMins !== undefined ? jsonData.activeMins : 1,
+                    deletedFlag: jsonData.deletedFlag !== undefined ? jsonData.deletedFlag : 0,
+                    activeMemo: jsonData.activeMemo || 'google',
+                    imageURL: jsonData.imageURL || '',
+                    thumbNailURL: jsonData.thumbNailURL || '',
+                    createdAt: jsonData.createdAt || new Date().toISOString(),
+                    modifiedAt: jsonData.modifiedAT || jsonData.modifiedAt || new Date().toISOString()
+                };
+                console.log('Data being sent to server:', dataToSend);
+                try {
+                    const response = await fetch(
+                        'https://vw.aisrv.in/node_backend/postProjectV1',
+                        {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(dataToSend),
+                            timeout: 10000
+                        }
+                    );
+
+                    if (response.status === 200) {
+                        // Delete the file after successful upload
+                        await fs.unlink(filePath);
+                        console.log(`Processed and deleted: ${filePath}`);
+                    }
+
+                    console.log(`✅ Successfully processed ${filePath}`);
+                } catch (error) {
+                    console.error(`❌ Error processing ${filePath}:`, error.message);
+                    if (error.response) {
+                        console.error('Server error details:', error.response.data);
+                    }
+                }
+            } catch (error) {
+                console.error('Error in processScreenshotFiles:', error);
+            }
+        }
+    } catch (error) {
+        console.error('Error in processScreenshotFiles:', error);
+    }
 }
+async function initScreenshotWatcher() {
+    const screenshotsDir = path.join(__dirname, 'public', 'screenshots');
+
+    try {
+        await fs.mkdir(screenshotsDir, { recursive: true });
+
+        // Process existing files first
+        console.log('Processing existing files...');
+        await processScreenshotFiles();
+        console.log('✅ Successfully processed existing files');
+        // Set up file watcher
+        const chokidar = require('chokidar');
+        const watcher = chokidar.watch(screenshotsDir, {
+            ignored: /(^|[\/\\])\../,
+            persistent: true,
+            ignoreInitial: true,
+            awaitWriteFinish: {
+                stabilityThreshold: 1000,
+                pollInterval: 100
+            }
+        });
+
+        watcher.on('add', async (filePath) => {
+            if (filePath.endsWith('.json') && path.basename(filePath).startsWith('screenshot_')) {
+                console.log('New file added:', filePath);
+                await processScreenshotFiles();
+            }
+        });
+
+        watcher.on('error', error => {
+            console.error('Watcher error:', error);
+        });
+
+    } catch (error) {
+        console.error('Error setting up file watcher:', error);
+    }
+}
+async function getJsonFilesRecursively(dir) {
+    let results = [];
+    try {
+        const files = await fs.readdir(dir, { withFileTypes: true });
+
+        for (const file of files) {
+            const fullPath = path.join(dir, file.name);
+            if (file.isDirectory()) {
+                results = [...results, ...await getJsonFilesRecursively(fullPath)];
+            } else if (file.name.endsWith('.json') && file.name.startsWith('screenshot_')) {
+                // Include files that are in date-based di
+                const parentDir = path.basename(path.dirname(fullPath));
+                if (/^\d{4}-\d{2}-\d{2}$/.test(parentDir)) { // Matches YYYY-MM-DD format
+                    results.push(fullPath);
+                }
+            }
+        }
+    } catch (error) {
+        console.error(`Error reading directory ${dir}:`, error);
+    }
+    console.log('results:', results);
+    return results;
+}
+// function getHourlyFolderName() {
+//     const now = new Date();
+//     const hour = now.getHours();
+//     // Format as "10-11" for 10:00-10:59
+//     return `${String(hour).padStart(2, '0')}-${String(hour + 1).padStart(2, '0')}`;
+// }
 
 async function saveScreenshotLocally(data) {
     try {
-        const now = new Date();
-        const hourFolder = getHourlyFolderName();
-        
-        const screenshotsDir = path.join(
-            'public',
-            'screenshots',
-            `project_${data.projectID}`,
-            `task_${data.taskID}`,
-            now.toISOString().split('T')[0], // YYYY-MM-DD
-            hourFolder
-        );
+        const baseFolder = path.join(__dirname, 'public', 'screenshots');
+        const datePath = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        const screenshotFolder = path.join(baseFolder, `project_${data.projectID}`, `task_${data.taskID}`, datePath);
+        await fs.ensureDir(screenshotFolder);
 
-        await fs.ensureDir(screenshotsDir);
-        const timestamp = now.getTime();
-        const filePath = path.join(screenshotsDir, `screenshot_${timestamp}.json`);
+        // Define filenames
+        const timestamp = Date.now();
+        const jsonFilename = `screenshot_${timestamp}.json`;
+        
 
-        // Create a clean copy of the data without the unwanted fields
-        const { savedLocally, lastUpdated, ...cleanData } = data;
-        
-        // Ensure keyboardJSON and mouseJSON are proper objects if they exist
-        if (cleanData.keyboardJSON && typeof cleanData.keyboardJSON === 'string') {
-            try {
-                cleanData.keyboardJSON = JSON.parse(cleanData.keyboardJSON);
-            } catch (e) {
-                console.error('Error parsing keyboardJSON:', e);
-            }
-        }
-        
-        if (cleanData.mouseJSON && typeof cleanData.mouseJSON === 'string') {
-            try {
-                cleanData.mouseJSON = JSON.parse(cleanData.mouseJSON);
-            } catch (e) {
-                console.error('Error parsing mouseJSON:', e);
-            }
+        // Log the actual base64 prefixes for debugging
+        console.log("Debug: imageURL prefix:", data.imageURL?.substring(0, 50));
+        console.log("Debug: thumbnailURL prefix:", data.thumbNailURL?.substring(0, 50));
+
+        // Validate base64 format
+        const screenshotMatch = data.imageURL?.match(/^data:image\/([a-zA-Z]+);base64,(.+)$/);
+        const thumbnailMatch = data.thumbNailURL?.match(/^data:image\/([a-zA-Z]+);base64,(.+)$/);
+
+        if (!screenshotMatch || !thumbnailMatch) {
+            console.log("🧪 imageURL prefix:", data.imageURL?.substring(0, 50));
+            console.log("🧪 thumbnailURL prefix:", data.thumbNailURL?.substring(0, 50));
+            console.error("❌ Invalid base64 image format");
+            return { success: false, error: "Invalid base64 image format" };
         }
 
-        // Add timestamps
-        const dataToSave = {
-            ...cleanData,
-            screenshotTimeStamp: cleanData.screenshotTimeStamp?.toISOString?.() || new Date().toISOString(),
-            calcTimeStamp: cleanData.calcTimeStamp?.toISOString?.() || new Date().toISOString()
+        // Decode and write screenshot image
+       
+        // Write JSON metadata
+        const metadata = {
+            projectID: data.projectID,
+            userID: data.userID,
+            taskID: data.taskID,
+            screenshotTimeStamp: new Date().toISOString(),
+            calcTimeStamp: new Date().toISOString(),
+            keyboardJSON: { clicks: data.keyboardJSON },
+            mouseJSON: { clicks: data.mouseJSON },
+            activeJSON: { app: data.activeJSON || 'Unknown' },
+            activeFlag: 1,
+            activeMins: 1, // default or calculated
+            deletedFlag: 0,
+            activeMemo: '',
+            imageURL: data.imageURL,  // Store the actual base64 data
+            thumbNailURL: data.thumbNailURL,  // Store the actual base64 data
+            createdAt: new Date().toISOString(),
+            modifiedAT: new Date().toISOString()
         };
 
-        await fs.writeJson(filePath, dataToSave, { spaces: 2 });
-        console.log(`Screenshot saved locally at: ${filePath}`);
-        return { 
-            success: true, 
+        await fs.writeJson(path.join(screenshotFolder, jsonFilename), metadata, { spaces: 2 });
+        console.log(`✅ Saved screenshot: ${jsonFilename}`);
+        return {
+            success: true,
             savedLocally: true,
-            filePath: filePath
+            filePath: path.join(screenshotFolder, jsonFilename)
         };
     } catch (error) {
         console.error('Error saving screenshot locally:', error);
@@ -169,17 +321,23 @@ async function takeScreenshot(mouseClickCount, keyboardPressCount) {
             thumbnailSize: screen.getPrimaryDisplay().workAreaSize
         });
 
-        const fullSizeBase64 = sources[0].thumbnail.resize({
+        // Generate full-size screenshot with base64 prefix
+        const fullSizeBase64 = `data:image/png;base64,${sources[0].thumbnail.resize({
             width: 1200,
             height: 800,
             quality: 'good'
-        }).toJPEG(60).toString('base64');
+        }).toJPEG(60).toString('base64')}`;
 
-        const thumbnailBase64 = sources[0].thumbnail.resize({
+        // Generate thumbnail with base64 prefix
+        const thumbnailBase64 = `data:image/png;base64,${sources[0].thumbnail.resize({
             width: 300,
             height: 200,
             quality: 'good'
-        }).toJPEG(60).toString('base64');
+        }).toJPEG(60).toString('base64')}`;
+
+        // Log the first 50 characters of the base64 strings for debugging
+        console.log('Debug: Full image base64 prefix:', fullSizeBase64.substring(0, 50));
+        console.log('Debug: Thumbnail base64 prefix:', thumbnailBase64.substring(0, 50));
 
         const workdiaryData = {
             projectID: currentProjectID,
@@ -187,12 +345,13 @@ async function takeScreenshot(mouseClickCount, keyboardPressCount) {
             taskID: currentTaskID,
             screenshotTimeStamp: new Date(),
             calcTimeStamp: new Date(),
-            keyboardJSON: JSON.stringify({ count: keyboardPressCount }),
-            mouseJSON: JSON.stringify({ count: mouseClickCount }),
+            keyboardJSON: JSON.stringify({ clicks: keyboardPressCount }),
+            mouseJSON: JSON.stringify({ clicks: mouseClickCount }),
             imageURL: fullSizeBase64,
-            thumbnailURL: thumbnailBase64,
+            thumbNailURL: thumbnailBase64,
             activeFlag: 1,
             deletedFlag: 0,
+            activeMemo: 'google',
             createdAt: new Date(),
             modifiedAT: new Date()
         };
@@ -202,32 +361,32 @@ async function takeScreenshot(mouseClickCount, keyboardPressCount) {
 
         // Try to save to server first, it will fall back to local if needed
         const result = await saveToWorkdiary(workdiaryData);
-        
+
         if (result && result.success) {
             // Reset the counters after successful save
             const resetInfo = {
                 mouseClicks: mouseClickCount,
                 keyPresses: keyboardPressCount
             };
-            
+
             // Reset the global counters
             mouseClickCount = 0;
             keyboardPressCount = 0;
-            
-            return { 
-                ...result, 
+
+            return {
+                ...result,
                 resetInfo,
                 countersReset: true
             };
         }
-        
+
         return result;
     } catch (error) {
         console.error('Error in takeScreenshot:', error);
-        return { 
-            success: false, 
+        return {
+            success: false,
             error: error.message,
-            savedLocally: false 
+            savedLocally: false
         };
     }
 }
@@ -246,15 +405,26 @@ function startTracking() {
     if (isTracking) return;
     isTracking = true;
 
-    // Start listening to all events
     uIOhook.start();
+    const firstDelay = Math.floor(Math.random() * SCREENSHOT_INTERVAL);
+    console.log(`🕓 First screenshot will be taken in ${Math.floor(firstDelay / 1000)} seconds`);
 
-    // Set up interval for screenshots (every 5 minutes) - ONLY when tracking starts
-    trackingInterval = setInterval(() => {
-        // Only take screenshot if we have activity counts
+    setTimeout(() => {
         if (typeof mouseClickCount !== 'undefined' && typeof keyboardPressCount !== 'undefined') {
             takeScreenshot(mouseClickCount, keyboardPressCount);
         }
+    }, firstDelay);
+    // Set up the recurring interval every 10 minutes
+    trackingInterval = setInterval(() => {
+        const randomDelay = Math.floor(Math.random() * SCREENSHOT_INTERVAL);
+
+        console.log(`🕓 Next screenshot will be taken in ${Math.floor(randomDelay / 1000)} seconds`);
+
+        setTimeout(() => {
+            if (typeof mouseClickCount !== 'undefined' && typeof keyboardPressCount !== 'undefined') {
+                takeScreenshot(mouseClickCount, keyboardPressCount);
+            }
+        }, randomDelay);
     }, SCREENSHOT_INTERVAL);
 
     // Mouse move event
@@ -425,13 +595,6 @@ const iohook = uIOhook;
 // Start the app
 if (app) {
     app.whenReady().then(() => {
-        // Set up will-quit handler
-        app.on('will-quit', () => {
-            stopTracking();
-            uIOhook.stop();
-            uIOhook.unregisterAllShortcuts();
-        });
-
         // Register IPC handlers
         ipcMain.handle('start-tracking', async () => {
             startTracking();
@@ -554,7 +717,7 @@ if (app) {
         }
 
         createWindow();
-
+        initScreenshotWatcher();
         app.on('activate', () => {
             if (BrowserWindow.getAllWindows().length === 0) {
                 createWindow();
@@ -572,7 +735,6 @@ if (app) {
     // Clean up on app quit
     app.on('will-quit', () => {
         stopTracking();
-        uIOhook.unload();
         uIOhook.stop();
     });
 }  
