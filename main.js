@@ -14,14 +14,563 @@ if (!app) {
 let mainWindow;
 let isTracking = false;
 let trackingInterval;
-let lastMousePosition = { x: 0, y: 0 };
+// const ACTIVITY_INTERVAL = 12000; // 12 seconds in millisecondslet lastMousePosition = { x: 0, y: 0 };
 const MOUSE_MOVE_THROTTLE_MS = 100; // Adjust this value (100ms default)
 let lastMouseEventSent = 0;
 let mouseClickCount = 0;
 let keyboardPressCount = 0;
 
-// Set screenshot interval to 10 minutes (600,000 ms)
+// Activity tracking variables
+let activityData = {
+    keyboardJSON: [],
+    mouseJSON: [],
+    activeFlag: [],
+    currentMinuteKeyboard: 0,
+    currentMinuteMouse: 0
+};
+
+// Create activity data directory if it doesn't exist
+const publicDir = path.join(__dirname, 'public');
+const activityDataDir = path.join(publicDir, 'activity_data');
+if (!fs.existsSync(activityDataDir)) {
+    fs.mkdirSync(activityDataDir, { recursive: true });
+}
+
+// Function to save activity data to file
+async function saveActivityData() {
+    try {
+        const currentDate = new Date();
+        const dateStr = currentDate.toISOString().split('T')[0];
+        const timeStr = currentDate.toISOString().split('T')[1].split('.')[0];
+        
+        const fileName = `activity_${dateStr}_${timeStr}.json`;
+        const filePath = path.join(activityDataDir, fileName);
+        
+        const dataToSave = {
+            timestamp: currentDate.toISOString(),
+            keyboardEvents: activityData.keyboardJSON,
+            mouseEvents: activityData.mouseJSON,
+            activeFlags: activityData.activeFlag,
+            totalIntervals: activityData.keyboardJSON.length
+        };
+        
+        await fs.writeFile(filePath, JSON.stringify(dataToSave, null, 2));
+        console.log(`Activity data saved to: ${filePath}`);
+        
+        // Reset activity data after saving
+        activityData.keyboardJSON = [];
+        activityData.mouseJSON = [];
+        activityData.activeFlag = [];
+        activityData.currentMinuteKeyboard = 0;
+        activityData.currentMinuteMouse = 0;
+    } catch (error) {
+        console.error('Error saving activity data:', error);
+    }
+}
+
+// Function to save activity data locally
+async function saveActivityDataLocally(data) {
+    try {
+        const baseFolder = path.join(__dirname, 'public', 'activity');
+        const datePath = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        const activityFolder = path.join(baseFolder, `project_${data.projectID}`, `task_${data.taskID}`, datePath);
+        await fs.ensureDir(activityFolder);
+
+        // Define filename
+        const timestamp = Date.now();
+        const jsonFilename = `activity_${timestamp}.json`;
+
+        // Prepare metadata
+        const metadata = {
+            projectID: data.projectID,
+            userID: data.userID,
+            taskID: data.taskID,
+            screenshotTimeStamp: data.screenshotTimeStamp,
+            keyboardJSON: data.keyboardJSON,
+            mouseJSON: data.mouseJSON,
+            activeFlag: data.activeFlag,
+            deletedFlag: data.deletedFlag || 0,
+            createdAt: new Date().toISOString(),
+            modifiedAt: new Date().toISOString()
+        };
+
+        await fs.writeJson(path.join(activityFolder, jsonFilename), metadata, { spaces: 2 });
+        console.log(`✅ Saved activity data: ${jsonFilename}`);
+        return {
+            success: true,
+            savedLocally: true,
+            filePath: path.join(activityFolder, jsonFilename)
+        };
+    } catch (error) {
+        console.error('Error saving activity data locally:', error);
+        throw error;
+    }
+}
+
+// Function to get activity JSON files recursively
+async function getActivityJsonFilesRecursively(dir) {
+    let results = [];
+    try {
+        const dirExists = await fs.pathExists(dir);
+        if (!dirExists) {
+            return results;
+        }
+
+        const files = await fs.readdir(dir, { withFileTypes: true });
+
+        for (const file of files) {
+            const fullPath = path.join(dir, file.name);
+            if (file.isDirectory()) {
+                results = [...results, ...await getActivityJsonFilesRecursively(fullPath)];
+            } else if (file.name.endsWith('.json') && file.name.startsWith('activity_')) {
+                const parentDir = path.basename(path.dirname(fullPath));
+                if (/^\d{4}-\d{2}-\d{2}$/.test(parentDir)) { // Matches YYYY-MM-DD format
+                    results.push(fullPath);
+                }
+            }
+        }
+    } catch (error) {
+        console.error(`Error reading activity directory ${dir}:`, error);
+    }
+    return results;
+}
+
+// Function to process activity files
+async function processActivityFiles() {
+    const activityDir = path.join(__dirname, 'public', 'activity');
+
+    try {
+        const files = await getActivityJsonFilesRecursively(activityDir);
+        console.log('Activity files to process:', files);
+
+        for (const filePath of files) {
+            try {
+                const fileContent = await fs.readFile(filePath, 'utf8');
+                const jsonData = JSON.parse(fileContent);
+
+                console.log('Processing activity data:', jsonData);
+
+                const response = await fetch('https://vw.aisrv.in/node_backend/postProjectV2', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(jsonData),
+                    timeout: 10000
+                });
+
+                if (response.status === 200) {
+                    // Delete the file after successful upload
+                    await fs.unlink(filePath);
+                    console.log(`✅ Processed and deleted activity file: ${filePath}`);
+                } else {
+                    console.error(`❌ Failed to process activity file: ${filePath}`);
+                }
+
+            } catch (error) {
+                console.error(`❌ Error processing activity file ${filePath}:`, error.message);
+            }
+        }
+    } catch (error) {
+        console.error('Error in processActivityFiles:', error);
+    }
+}
+
+// Modified sendActivityData function
+async function sendActivityData() {
+    try {
+        const dataToSend = {
+            projectID: currentProjectID,
+            userID: currentUserID,
+            taskID: currentTaskID,
+            screenshotTimeStamp: new Date().toISOString(),
+            keyboardJSON: activityData.keyboardJSON,
+            mouseJSON: activityData.mouseJSON,
+            activeFlag: activityData.activeFlag,
+            deletedFlag: 0
+        };
+
+        console.log('Sending 10-minute activity data:', dataToSend);
+
+        try {
+            const response = await fetch('https://vw.aisrv.in/node_backend/postProjectV2', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(dataToSend)
+            });
+
+            if (response.ok) {
+                console.log('✅ Activity data sent successfully to postProjectV2');
+                // Reset arrays after successful server save
+                activityData.keyboardJSON = [];
+                activityData.mouseJSON = [];
+                activityData.activeFlag = [];
+                return { success: true, savedLocally: false };
+            } else {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+        } catch (serverError) {
+            console.error('Server save failed, saving locally...', serverError);
+            
+            // Save locally if server fails
+            const localResult = await saveActivityDataLocally(dataToSend);
+            
+            // Reset arrays after local save
+            activityData.keyboardJSON = [];
+            activityData.mouseJSON = [];
+            activityData.activeFlag = [];
+            
+            return {
+                ...localResult,
+                serverError: serverError.message
+            };
+        }
+
+    } catch (error) {
+        console.error('Error in sendActivityData:', error);
+        
+        // Reset arrays even on error to prevent accumulation
+        activityData.keyboardJSON = [];
+        activityData.mouseJSON = [];
+        activityData.activeFlag = [];
+        
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+}
+
+// Function to start activity tracking
+function startActivityTracking() {
+    // Reset activity data
+    activityData = {
+        keyboardJSON: [],
+        mouseJSON: [],
+        activeFlag: [],
+        currentMinuteKeyboard: 0,
+        currentMinuteMouse: 0
+    };
+
+    // Collect activity data every ${ACTIVITY_INTERVAL/1000} seconds
+    activityInterval = setInterval(async () => {
+        console.log('=== Activity Tracking Interval ===');
+        console.log(`Interval Duration: ${ACTIVITY_INTERVAL/1000} seconds`);
+        console.log(`Current Time: ${new Date().toISOString()}`);
+        console.log(`Current Keyboard Activity: ${activityData.currentMinuteKeyboard}`);
+        console.log(`Current Mouse Activity: ${activityData.currentMinuteMouse}`);
+        console.log(`Total Intervals Collected: ${activityData.keyboardJSON.length}`);
+        console.log('');
+        // Add current interval's data to arrays
+        activityData.keyboardJSON.push(activityData.currentMinuteKeyboard);
+        activityData.mouseJSON.push(activityData.currentMinuteMouse);
+        
+        // Set active flag: 1 if any activity, 0 if no activity
+        const isActive = (activityData.currentMinuteKeyboard > 0 || activityData.currentMinuteMouse > 0) ? 1 : 0;
+        activityData.activeFlag.push(isActive);
+
+        // Log activity data with more details
+        console.log('=== Activity Data Summary ===');
+        console.log(`Keyboard Events: ${activityData.currentMinuteKeyboard}`);
+        console.log(`Mouse Events: ${activityData.currentMinuteMouse}`);
+        console.log(`Active Status: ${isActive ? 'Active' : 'Inactive'}`);
+        console.log('');
+        console.log('=== Activity History ===');
+        console.log(`Total Keyboard Events: ${activityData.keyboardJSON.reduce((a, b) => a + b, 0)}`);
+        console.log(`Total Mouse Events: ${activityData.mouseJSON.reduce((a, b) => a + b, 0)}`);
+        console.log(`Active Intervals: ${activityData.activeFlag.filter(flag => flag === 1).length}`);
+        console.log('');
+
+        // Reset current minute counters
+        activityData.currentMinuteKeyboard = 0;
+        activityData.currentMinuteMouse = 0;
+
+        // Save data every 10 intervals (every 2 minutes)
+        if (activityData.keyboardJSON.length >= 10) {
+            console.log('=== Saving Activity Data ===');
+            console.log(`Saving interval data after ${activityData.keyboardJSON.length} intervals`);
+            await saveActivityData();
+        } 
+
+        // If we have 10 intervals of data, send to API
+        if (activityData.keyboardJSON.length >= 10) {
+            console.log('=== Sending Activity Data to API ===');
+            console.log(`Sending interval data after ${activityData.keyboardJSON.length} intervals`);
+            await sendActivityData();
+        } 
+        // If we have 10 intervals of data, send to API
+        if (activityData.keyboardJSON.length >= 10) {
+            console.log('Sending activity data after 10 intervals...');
+            sendActivityData();
+        }
+    }, ACTIVITY_INTERVAL); // Every 12 seconds
+}
+
+// Function to stop activity tracking
+function stopActivityTracking() {
+    if (activityInterval) {
+        clearInterval(activityInterval);
+        activityInterval = null;
+    }
+}
+
+// Modified initScreenshotWatcher to include activity file watching
+async function initScreenshotWatcher() {
+    const screenshotsDir = path.join(__dirname, 'public', 'screenshots');
+    const activityDir = path.join(__dirname, 'public', 'activity');
+
+    try {
+        await fs.mkdir(screenshotsDir, { recursive: true });
+        await fs.mkdir(activityDir, { recursive: true });
+
+        // Process existing files first
+        console.log('Processing existing screenshot files...');
+        await processScreenshotFiles();
+        console.log('Processing existing activity files...');
+        await processActivityFiles();
+        console.log('✅ Successfully processed existing files');
+
+        // Set up file watcher for screenshots
+        const chokidar = require('chokidar');
+        const screenshotWatcher = chokidar.watch(screenshotsDir, {
+            ignored: /(^|[\/\\])\../,
+            persistent: true,
+            ignoreInitial: true,
+            awaitWriteFinish: {
+                stabilityThreshold: 1000,
+                pollInterval: 100
+            }
+        });
+
+        screenshotWatcher.on('add', async (filePath) => {
+            if (filePath.endsWith('.json') && path.basename(filePath).startsWith('screenshot_')) {
+                console.log('New screenshot file added:', filePath);
+                await processScreenshotFiles();
+            }
+        });
+
+        // Set up file watcher for activity data
+        const activityWatcher = chokidar.watch(activityDir, {
+            ignored: /(^|[\/\\])\../,
+            persistent: true,
+            ignoreInitial: true,
+            awaitWriteFinish: {
+                stabilityThreshold: 1000,
+                pollInterval: 100
+            }
+        });
+
+        activityWatcher.on('add', async (filePath) => {
+            if (filePath.endsWith('.json') && path.basename(filePath).startsWith('activity_')) {
+                console.log('New activity file added:', filePath);
+                await processActivityFiles();
+            }
+        });
+
+        screenshotWatcher.on('error', error => {
+            console.error('Screenshot watcher error:', error);
+        });
+
+        activityWatcher.on('error', error => {
+            console.error('Activity watcher error:', error);
+        });
+
+    } catch (error) {
+        console.error('Error setting up file watchers:', error);
+    }
+}
+
+// Modified startTracking function to include activity tracking
+function startTracking() {
+    if (isTracking) return;
+    isTracking = true;
+
+    uIOhook.start();
+    
+    // Start activity tracking for postProjectV2
+    startActivityTracking();
+    
+    const firstDelay = Math.floor(Math.random() * SCREENSHOT_INTERVAL);
+    console.log(`🕓 First screenshot will be taken in ${Math.floor(firstDelay / 1000)} seconds`);
+
+    setTimeout(() => {
+        if (typeof mouseClickCount !== 'undefined' && typeof keyboardPressCount !== 'undefined') {
+            takeScreenshot(mouseClickCount, keyboardPressCount);
+        }
+    }, firstDelay);
+    
+    // Set up the recurring interval every 10 minutes
+    trackingInterval = setInterval(() => {
+        const randomDelay = Math.floor(Math.random() * SCREENSHOT_INTERVAL);
+
+        console.log(`🕓 Next screenshot will be taken in ${Math.floor(randomDelay / 1000)} seconds`);
+
+        setTimeout(() => {
+            if (typeof mouseClickCount !== 'undefined' && typeof keyboardPressCount !== 'undefined') {
+                takeScreenshot(mouseClickCount, keyboardPressCount);
+            }
+        }, randomDelay);
+    }, SCREENSHOT_INTERVAL);
+
+    // Mouse move event
+    uIOhook.on('mousemove', (event) => {
+        const now = Date.now();
+
+        // Throttle mouse move events
+        if (now - lastMouseEventSent >= MOUSE_MOVE_THROTTLE_MS) {
+            lastMouseEventSent = now;
+            lastMousePosition = { x: event.x, y: event.y };
+            sendGlobalEvent({
+                type: 'mousemove',
+                x: event.x,
+                y: event.y
+            });
+        }
+    });
+
+    // Modified Mouse click event
+    uIOhook.on('click', (event) => {
+        mouseClickCount++;
+        activityData.currentMinuteMouse++; // Track for activity API
+        sendGlobalEvent({
+            type: 'mouseclick',
+            button: event.button,
+            x: event.x,
+            y: event.y
+        });
+    });
+
+    // Modified Key press event
+    uIOhook.on('keydown', (event) => {
+        keyboardPressCount++;
+        activityData.currentMinuteKeyboard++; // Track for activity API
+        sendGlobalEvent({
+            type: 'keydown',
+            keycode: event.keycode,
+            key: UiohookKey[event.keycode] || `Unknown(${event.keycode})`,
+            ctrlKey: event.ctrlKey,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            metaKey: event.metaKey
+        });
+
+        // Exit on Escape key
+        if (event.keycode === UiohookKey.Escape) {
+            stopTracking();
+        }
+    });
+
+    console.log('Started tracking global input events');
+    if (mainWindow) {
+        mainWindow.webContents.send('tracking-status', { isTracking: true });
+    }
+}
+
+// Modified stopTracking function to include activity tracking
+function stopTracking() {
+    if (!isTracking) return;
+    isTracking = false;
+
+    // Clear the screenshot interval
+    if (trackingInterval) {
+        clearInterval(trackingInterval);
+        trackingInterval = null;
+    }
+
+    // Stop activity tracking
+    stopActivityTracking();
+
+    uIOhook.removeAllListeners();
+    console.log('Stopped tracking global input events');
+    if (mainWindow) {
+        mainWindow.webContents.send('tracking-status', { isTracking: false });
+    }
+}
+
+// Modified createWindow function to remove menu bar
+function createWindow() {
+    mainWindow = new BrowserWindow({
+        width: 600,
+        height: 900,
+        frame: false, // Remove default frame
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            preload: path.join(__dirname, 'preload.js')
+        },
+    });
+
+    // Remove menu bar
+    mainWindow.setMenuBarVisibility(false);
+
+    // Load the app
+    const startUrl = process.env.ELECTRON_START_URL || `file://${path.join(__dirname, 'build/index.html')}`;
+    mainWindow.loadURL(startUrl);
+
+    // Open the DevTools in development
+    if (process.env.NODE_ENV === 'development') {
+        mainWindow.webContents.openDevTools();
+    }
+}
+
+// Add new IPC handlers for window controls
+ipcMain.handle('window-minimize', () => {
+    if (mainWindow) {
+        mainWindow.minimize();
+    }
+});
+
+ipcMain.handle('window-close', () => {
+    if (mainWindow) {
+        stopTracking();
+        mainWindow.close();
+    }
+});
+
+// Add IPC handler for pause functionality
+ipcMain.handle('pause-tracking', () => {
+    // Don't stop tracking completely, just pause UI updates
+    // Timer should continue running in background
+    if (mainWindow) {
+        mainWindow.webContents.send('tracking-paused', { isPaused: true });
+    }
+    console.log('Tracking paused but timers continue running');
+    return { success: true, isPaused: true };
+});
+
+// Add IPC handler for punch out during pause
+ipcMain.handle('punch-out', () => {
+    console.log('Processing punch out request...');
+    stopTracking();
+    stopActivityTracking();
+    uIOhook.stop();
+    if (mainWindow) {
+        mainWindow.webContents.send('tracking-stopped');
+    }
+    return { success: true, message: 'Punched out successfully' };
+});
+
+ipcMain.handle('resume-tracking', () => {
+    if (mainWindow) {
+        mainWindow.webContents.send('tracking-resumed', { isPaused: false });
+    }
+    return { success: true, isPaused: false };
+});
+
+// Modify the will-quit handler to clean up activity tracking
+app.on('will-quit', () => {
+    console.log('App quitting... cleaning up tracking');
+    stopTracking();
+    stopActivityTracking();
+    uIOhook.stop();
+});
+
+// Set screenshot interval to 2 minutes (120,000 ms)
 const SCREENSHOT_INTERVAL = 2 * 60 * 1000;
+// Set activity tracking interval to 12 seconds (2 minutes / 10)
+const ACTIVITY_INTERVAL = SCREENSHOT_INTERVAL / 10; // 12 seconds
 let currentProjectID = null;
 let currentUserID = null;
 let currentTaskID = null;
@@ -103,7 +652,7 @@ async function saveToWorkdiary(data) {
         }
     }
 }
-async function processScreenshotFiles() {
+async function processScreenshotFiles() { 
     const screenshotsDir = path.join(__dirname, 'public', 'screenshots');
 
     try {
@@ -361,7 +910,7 @@ async function takeScreenshot(mouseClickCount, keyboardPressCount) {
 
         // Try to save to server first, it will fall back to local if needed
         const result = await saveToWorkdiary(workdiaryData);
-
+  
         if (result && result.success) {
             // Reset the counters after successful save
             const resetInfo = {
@@ -370,8 +919,8 @@ async function takeScreenshot(mouseClickCount, keyboardPressCount) {
             };
 
             // Reset the global counters
-            mouseClickCount = 0;
-            keyboardPressCount = 0;
+            global.mouseClickCount = 0;
+            global.keyboardPressCount = 0;
 
             return {
                 ...result,
