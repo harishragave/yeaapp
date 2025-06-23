@@ -19,8 +19,15 @@ const MOUSE_MOVE_THROTTLE_MS = 100; // Adjust this value (100ms default)
 let lastMouseEventSent = 0;
 let mouseClickCount = 0;
 let keyboardPressCount = 0;
+let currentMouseCount = 0;
+let currentKeyboardCount = 0;
 
 // Activity tracking variables
+const ACTIVITY_BLOCK_SIZE = 10; // 10-minute blocks
+const ACTIVITY_INTERVAL_MS = 60000; // 1 minute in milliseconds (renamed from activityInterval)
+const MINUTE_INTERVAL = 60000; // 1 minute in milliseconds
+let activityIntervalId = null; // This will hold the setInterval ID
+
 let activityData = {
     keyboardJSON: [],
     mouseJSON: [],
@@ -30,8 +37,7 @@ let activityData = {
 };
 
 // Create activity data directory if it doesn't exist
-const publicDir = path.join(__dirname, 'public');
-const activityDataDir = path.join(publicDir, 'activity_data');
+const activityDataDir = path.join(__dirname, 'public', 'activity_data');
 if (!fs.existsSync(activityDataDir)) {
     fs.mkdirSync(activityDataDir, { recursive: true });
 }
@@ -103,6 +109,42 @@ async function saveActivityDataLocally(data) {
         };
     } catch (error) {
         console.error('Error saving activity data locally:', error);
+        throw error;
+    }
+}
+
+// Function to save screenshot locally
+async function saveScreenshotLocally(data) {
+    try {
+        const baseFolder = path.join(__dirname, 'public', 'screenshots');
+        const datePath = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        const screenshotFolder = path.join(baseFolder, `project_${data.projectID}`, `task_${data.taskID}`, datePath);
+        await fs.ensureDir(screenshotFolder);
+
+        // Define filename
+        const timestamp = Date.now();
+        const jsonFilename = `screenshot_${timestamp}.json`;
+
+        // Prepare metadata
+        const metadata = {
+            projectID: data.projectID,
+            userID: data.userID,
+            taskID: data.taskID,
+            screenshotTimeStamp: data.screenshotTimeStamp,
+            deletedFlag: data.deletedFlag || 0,
+            createdAt: new Date().toISOString(),
+            modifiedAt: new Date().toISOString()
+        };
+
+        await fs.writeJson(path.join(screenshotFolder, jsonFilename), metadata, { spaces: 2 });
+        console.log(`✅ Saved screenshot: ${jsonFilename}`);
+        return {
+            success: true,
+            savedLocally: true,
+            filePath: path.join(screenshotFolder, jsonFilename)
+        };
+    } catch (error) {
+        console.error('Error saving screenshot locally:', error);
         throw error;
     }
 }
@@ -179,45 +221,27 @@ async function processActivityFiles() {
 // Modified sendActivityData function
 async function sendActivityData() {
     try {
-        const dataToSend = {
+        // Create data to send
+        const payload = {
             projectID: currentProjectID,
             userID: currentUserID,
             taskID: currentTaskID,
             screenshotTimeStamp: new Date().toISOString(),
-            keyboardJSON: activityData.keyboardJSON,
-            mouseJSON: activityData.mouseJSON,
-            activeFlag: activityData.activeFlag,
+            keyboardJSON: [...activityData.keyboardJSON],
+            mouseJSON: [...activityData.mouseJSON],
+            activeFlag: [...activityData.activeFlag],
             deletedFlag: 0
         };
+        console.log('Sending activity data:', payload);
+        // Send to endpoint
+        const response = await fetch('https://vw.aisrv.in/node_backend/postProjectV2', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
 
-        console.log('Sending 10-minute activity data:', dataToSend);
-
-        try {
-            const response = await fetch('https://vw.aisrv.in/node_backend/postProjectV2', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(dataToSend)
-            });
-
-            if (response.ok) {
-                console.log('✅ Activity data sent successfully to postProjectV2');
-                // Reset arrays after successful server save
-                activityData.keyboardJSON = [];
-                activityData.mouseJSON = [];
-                activityData.activeFlag = [];
-                return { success: true, savedLocally: false };
-            } else {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-        } catch (serverError) {
-            console.error('Server save failed, saving locally...', serverError);
-            
-            // Save locally if server fails
-            const localResult = await saveActivityDataLocally(dataToSend);
-            
-            // Reset arrays after local save
+        // Reset after successful send
+        if (response.ok) {
             activityData.keyboardJSON = [];
             activityData.mouseJSON = [];
             activityData.activeFlag = [];
@@ -230,14 +254,14 @@ async function sendActivityData() {
 
     } catch (error) {
         console.error('Error in sendActivityData:', error);
-        
+        const localResult = await saveActivityDataLocally(dataToSend);
         // Reset arrays even on error to prevent accumulation
         activityData.keyboardJSON = [];
         activityData.mouseJSON = [];
         activityData.activeFlag = [];
         
         return {
-            success: false,
+            ...localResult,
             error: error.message
         };
     }
@@ -254,15 +278,17 @@ function startActivityTracking() {
         currentMinuteMouse: 0
     };
 
-    // Collect activity data every ${ACTIVITY_INTERVAL/1000} seconds
-    activityInterval = setInterval(async () => {
+    // Collect activity data every minute
+    activityIntervalId = setInterval(async () => {
+        // Log activity tracking details
         console.log('=== Activity Tracking Interval ===');
-        console.log(`Interval Duration: ${ACTIVITY_INTERVAL/1000} seconds`);
+        console.log(`Interval Duration: 60 seconds`);
         console.log(`Current Time: ${new Date().toISOString()}`);
         console.log(`Current Keyboard Activity: ${activityData.currentMinuteKeyboard}`);
         console.log(`Current Mouse Activity: ${activityData.currentMinuteMouse}`);
         console.log(`Total Intervals Collected: ${activityData.keyboardJSON.length}`);
         console.log('');
+
         // Add current interval's data to arrays
         activityData.keyboardJSON.push(activityData.currentMinuteKeyboard);
         activityData.mouseJSON.push(activityData.currentMinuteMouse);
@@ -287,32 +313,52 @@ function startActivityTracking() {
         activityData.currentMinuteKeyboard = 0;
         activityData.currentMinuteMouse = 0;
 
-        // Save data every 10 intervals (every 2 minutes)
-        if (activityData.keyboardJSON.length >= 10) {
-            console.log('=== Saving Activity Data ===');
-            console.log(`Saving interval data after ${activityData.keyboardJSON.length} intervals`);
+        // Save data every 10 intervals (every 10 minutes)
+        try {
             await saveActivityData();
-        } 
-
-        // If we have 10 intervals of data, send to API
-        if (activityData.keyboardJSON.length >= 10) {
-            console.log('=== Sending Activity Data to API ===');
-            console.log(`Sending interval data after ${activityData.keyboardJSON.length} intervals`);
-            await sendActivityData();
-        } 
-        // If we have 10 intervals of data, send to API
-        if (activityData.keyboardJSON.length >= 10) {
-            console.log('Sending activity data after 10 intervals...');
-            sendActivityData();
+            console.log('Activity data saved successfully');
+        } catch (error) {
+            console.error('Error saving activity data:', error);
         }
-    }, ACTIVITY_INTERVAL); // Every 12 seconds
+        try {
+            console.log('Sending activity data to API...');
+            const payload = {
+                projectID: currentProjectID,
+                userID: currentUserID,
+                taskID: currentTaskID,
+                screenshotTimeStamp: new Date().toISOString().replace('T', ' ').replace('Z', ''),
+                keyboardJSON: [...activityData.keyboardJSON],
+                mouseJSON: [...activityData.mouseJSON],
+                activeFlag: [...activityData.activeFlag],
+                deletedFlag: 0
+            };
+            console.log('Sending activity data:', payload);
+            // Send to endpoint
+            const response = await fetch('https://vw.aisrv.in/node_backend/postProjectV2', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            console.log('IM THE BEST');
+            console.log(result);
+            if (!result) {
+                console.error('Error sending to API:', result);
+            } else {
+                console.log('Activity data sent to API successfully');
+            }
+        } catch (error) {
+            console.error('Error in API call:', error);
+        }
+        // Send to API every 10 intervals (every 10 minutes)
+    }, ACTIVITY_INTERVAL_MS); // Use the constant value here
 }
 
 // Function to stop activity tracking
 function stopActivityTracking() {
-    if (activityInterval) {
-        clearInterval(activityInterval);
-        activityInterval = null;
+    if (activityIntervalId) {
+        clearInterval(activityIntervalId);
+        activityIntervalId = null;
     }
 }
 
@@ -431,36 +477,107 @@ function startTracking() {
     });
 
     // Modified Mouse click event
-    uIOhook.on('click', (event) => {
-        mouseClickCount++;
-        activityData.currentMinuteMouse++; // Track for activity API
-        sendGlobalEvent({
-            type: 'mouseclick',
-            button: event.button,
-            x: event.x,
-            y: event.y
-        });
+    uIOhook.on('click', () => {
+        activityData.currentMinuteMouse++;
     });
 
-    // Modified Key press event
-    uIOhook.on('keydown', (event) => {
-        keyboardPressCount++;
-        activityData.currentMinuteKeyboard++; // Track for activity API
-        sendGlobalEvent({
-            type: 'keydown',
-            keycode: event.keycode,
-            key: UiohookKey[event.keycode] || `Unknown(${event.keycode})`,
-            ctrlKey: event.ctrlKey,
-            altKey: event.altKey,
-            shiftKey: event.shiftKey,
-            metaKey: event.metaKey
-        });
+    // Keyboard presses
+    uIOhook.on('keydown', () => {
+        activityData.currentMinuteKeyboard++;
+    });
 
-        // Exit on Escape key
+    // Exit on Escape key
+    uIOhook.on('keydown', (event) => {
         if (event.keycode === UiohookKey.Escape) {
             stopTracking();
         }
     });
+
+    // Update takeScreenshot to use current counts
+    async function takeScreenshot() {
+        try {
+            const sources = await desktopCapturer.getSources({
+                types: ['screen'],
+                thumbnailSize: screen.getPrimaryDisplay().workAreaSize
+            });
+
+            // Generate full-size screenshot with base64 prefix
+            const fullSizeBase64 = `data:image/png;base64,${sources[0].thumbnail.resize({
+                width: 1200,
+                height: 800,
+                quality: 'good'
+            }).toJPEG(60).toString('base64')}`;
+
+            // Generate thumbnail with base64 prefix
+            const thumbnailBase64 = `data:image/png;base64,${sources[0].thumbnail.resize({
+                width: 300,
+                height: 200,
+                quality: 'good'
+            }).toJPEG(60).toString('base64')}`;
+
+            // Log the first 50 characters of the base64 strings for debugging
+            console.log('Debug: Full image base64 prefix:', fullSizeBase64.substring(0, 50));
+            console.log('Debug: Thumbnail base64 prefix:', thumbnailBase64.substring(0, 50));
+
+            const workdiaryData = {
+                projectID: currentProjectID,
+                userID: currentUserID,
+                taskID: currentTaskID,
+                screenshotTimeStamp: new Date(),
+                calcTimeStamp: new Date(),
+                keyboardJSON: JSON.stringify({ clicks: currentKeyboardCount }),
+                mouseJSON: JSON.stringify({ clicks: currentMouseCount }),
+                imageURL: fullSizeBase64,
+                thumbNailURL: thumbnailBase64,
+                activeFlag: 1,
+                deletedFlag: 0,
+                activeMemo: 'google',
+                createdAt: new Date(),
+                modifiedAT: new Date()
+            };
+
+            console.log('Screenshot data size:',
+                JSON.stringify(workdiaryData).length / 1024, 'KB');
+
+            // Try to save to server first, it will fall back to local if needed
+            const result = await saveToWorkdiary(workdiaryData);
+            
+            // Reset all counters after screenshot
+            const resetInfo = {
+                mouseClicks: currentMouseCount,
+                keyPresses: currentKeyboardCount
+            };
+            
+            // Reset all counters
+            currentMouseCount = 0;
+            currentKeyboardCount = 0;
+            mouseClickCount = 0;
+            keyboardPressCount = 0;
+            activityData.currentMinuteKeyboard = 0;
+            activityData.currentMinuteMouse = 0;
+            
+            return { 
+                ...result, 
+                resetInfo,
+                countersReset: true
+            };
+
+        } catch (error) {
+            console.error('Error in takeScreenshot:', error);
+            // Reset all counters even if there's an error
+            currentMouseCount = 0;
+            currentKeyboardCount = 0;
+            mouseClickCount = 0;
+            keyboardPressCount = 0;
+            activityData.currentMinuteKeyboard = 0;
+            activityData.currentMinuteMouse = 0;
+            return { 
+                success: false, 
+                error: error.message,
+                savedLocally: false 
+            };
+        }
+    }
 
     console.log('Started tracking global input events');
     if (mainWindow) {
@@ -490,30 +607,30 @@ function stopTracking() {
 }
 
 // Modified createWindow function to remove menu bar
-function createWindow() {
-    mainWindow = new BrowserWindow({
-        width: 600,
-        height: 900,
-        frame: false, // Remove default frame
-        webPreferences: {
-            nodeIntegration: false,
-            contextIsolation: true,
-            preload: path.join(__dirname, 'preload.js')
-        },
-    });
+// function createWindow() {
+//     mainWindow = new BrowserWindow({
+//         width: 600,
+//         height: 900,
+//         frame: false, // Remove default frame
+//         webPreferences: {
+//             nodeIntegration: false,
+//             contextIsolation: true,
+//             preload: path.join(__dirname, 'preload.js')
+//         },
+//     });
 
-    // Remove menu bar
-    mainWindow.setMenuBarVisibility(false);
+//     // Remove menu bar
+//     mainWindow.setMenuBarVisibility(false);
 
-    // Load the app
-    const startUrl = process.env.ELECTRON_START_URL || `file://${path.join(__dirname, 'build/index.html')}`;
-    mainWindow.loadURL(startUrl);
+//     // Load the app
+//     const startUrl = process.env.ELECTRON_START_URL || `file://${path.join(__dirname, 'build/index.html')}`;
+//     mainWindow.loadURL(startUrl);
 
-    // Open the DevTools in development
-    if (process.env.NODE_ENV === 'development') {
-        mainWindow.webContents.openDevTools();
-    }
-}
+//     // Open the DevTools in development
+//     if (process.env.NODE_ENV === 'development') {
+//         mainWindow.webContents.openDevTools();
+//     }
+// }
 
 // Add new IPC handlers for window controls
 ipcMain.handle('window-minimize', () => {
@@ -568,7 +685,7 @@ app.on('will-quit', () => {
 });
 
 // Set screenshot interval to 2 minutes (120,000 ms)
-const SCREENSHOT_INTERVAL = 2 * 60 * 1000;
+const SCREENSHOT_INTERVAL = 10 * 60 * 1000;
 // Set activity tracking interval to 12 seconds (2 minutes / 10)
 const ACTIVITY_INTERVAL = SCREENSHOT_INTERVAL / 10; // 12 seconds
 let currentProjectID = null;
@@ -577,22 +694,12 @@ let currentTaskID = null;
 // let currentProjectName = null;
 // let currentTaskName = null;
 
-// Remove the original saveToWorkdiary function and replace with:
 async function saveToWorkdiary(data) {
     try {
-        console.log('Saving to workdiary, thumbnailURL exists:', !!data.thumbnailURL);
-        console.log('Data being sent to server:', {
-            projectID: data.projectID,
-            userID: data.userID,
-            taskID: data.taskID,
-            screenshotTimeStamp: data.screenshotTimeStamp,
-            calcTimeStamp: data.calcTimeStamp,
-            keyboardJSON: data.keyboardJSON,
-            mouseJSON: data.mouseJSON,
-            activeFlag: 1,
-            deletedFlag: 0,
-            imageURL: data.imageURL.substring(0, 50) + '...',  // Show first 50 chars for debugging
-            thumbnailURL: data.thumbnailURL.substring(0, 50) + '...'  // Show first 50 chars for debugging
+        console.log('Saving to workdiary with counts:', {
+            keyboard: data.keyboardJSON,
+            mouse: data.mouseJSON,
+            thumbnailExists: !!data.thumbNailURL
         });
 
         const response = await fetch('https://vw.aisrv.in/node_backend/postProjectV1', {
@@ -606,15 +713,16 @@ async function saveToWorkdiary(data) {
                 taskID: data.taskID,
                 screenshotTimeStamp: data.screenshotTimeStamp,
                 calcTimeStamp: data.calcTimeStamp,
+                // Send as JSON objects, not strings
                 keyboardJSON: data.keyboardJSON,
                 mouseJSON: data.mouseJSON,
-                activeJSON: data.activeJSON || {},
+                activeJSON: data.activeJSON || { app: 'Unknown' },
                 activeFlag: 1,
                 activeMins: 1,
                 deletedFlag: 0,
-                activeMemo: '',
+                activeMemo: data.activeMemo || '',
                 imageURL: data.imageURL,
-                thumbNailURL: data.thumbnailURL
+                thumbNailURL: data.thumbNailURL
             })
         });
 
@@ -628,7 +736,8 @@ async function saveToWorkdiary(data) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
 
-        console.log('Data saved via backend API');
+        console.log('✅ Data saved via backend API successfully');
+        
         return {
             success: true,
             savedLocally: false,
@@ -836,8 +945,8 @@ async function saveScreenshotLocally(data) {
             taskID: data.taskID,
             screenshotTimeStamp: new Date().toISOString(),
             calcTimeStamp: new Date().toISOString(),
-            keyboardJSON: { clicks: data.keyboardJSON },
-            mouseJSON: { clicks: data.mouseJSON },
+            keyboardJSON: data.keyboardJSON,
+            mouseJSON: data.mouseJSON,
             activeJSON: { app: data.activeJSON || 'Unknown' },
             activeFlag: 1,
             activeMins: 1, // default or calculated
@@ -863,8 +972,11 @@ async function saveScreenshotLocally(data) {
 }
 
 
-async function takeScreenshot(mouseClickCount, keyboardPressCount) {
+// Fixed takeScreenshot function
+async function takeScreenshot() {
     try {
+        console.log(`Taking screenshot with counts - Keyboard: ${currentKeyboardCount}, Mouse: ${currentMouseCount}`);
+        
         const sources = await desktopCapturer.getSources({
             types: ['screen'],
             thumbnailSize: screen.getPrimaryDisplay().workAreaSize
@@ -884,18 +996,20 @@ async function takeScreenshot(mouseClickCount, keyboardPressCount) {
             quality: 'good'
         }).toJPEG(60).toString('base64')}`;
 
-        // Log the first 50 characters of the base64 strings for debugging
-        console.log('Debug: Full image base64 prefix:', fullSizeBase64.substring(0, 50));
-        console.log('Debug: Thumbnail base64 prefix:', thumbnailBase64.substring(0, 50));
+        // Store current counts before reset
+        const keyboardCount = currentKeyboardCount;
+        const mouseCount = currentMouseCount;
 
+        // Prepare workdiary data with PROPER JSON format for counts
         const workdiaryData = {
             projectID: currentProjectID,
             userID: currentUserID,
             taskID: currentTaskID,
             screenshotTimeStamp: new Date(),
             calcTimeStamp: new Date(),
-            keyboardJSON: JSON.stringify({ clicks: keyboardPressCount }),
-            mouseJSON: JSON.stringify({ clicks: mouseClickCount }),
+            // Store counts as JSON strings
+            keyboardJSON: JSON.stringify({ clicks: keyboardCount }),
+            mouseJSON: JSON.stringify({ clicks: mouseCount }),
             imageURL: fullSizeBase64,
             thumbNailURL: thumbnailBase64,
             activeFlag: 1,
@@ -905,37 +1019,71 @@ async function takeScreenshot(mouseClickCount, keyboardPressCount) {
             modifiedAT: new Date()
         };
 
-        console.log('Screenshot data size:',
-            JSON.stringify(workdiaryData).length / 1024, 'KB');
+        console.log('Screenshot data with counts:', {
+            keyboard: workdiaryData.keyboardJSON,
+            mouse: workdiaryData.mouseJSON,
+            dataSize: JSON.stringify(workdiaryData).length / 1024 + ' KB'
+        });
 
-        // Try to save to server first, it will fall back to local if needed
+        // Try to save to server first
         const result = await saveToWorkdiary(workdiaryData);
-  
-        if (result && result.success) {
-            // Reset the counters after successful save
-            const resetInfo = {
-                mouseClicks: mouseClickCount,
-                keyPresses: keyboardPressCount
-            };
-
-            // Reset the global counters
-            global.mouseClickCount = 0;
-            global.keyboardPressCount = 0;
-
-            return {
-                ...result,
-                resetInfo,
+        
+        // Reset counters ONLY after successful screenshot
+        if (result.success) {
+            console.log(`Resetting counters - Previous: K:${keyboardCount}, M:${mouseCount}`);
+            
+            // Reset all screenshot-related counters
+            currentMouseCount = 0;
+            currentKeyboardCount = 0;
+            mouseClickCount = 0;
+            keyboardPressCount = 0;
+            
+            // Emit screenshot taken event with the counts that were used
+            mainWindow?.webContents.send('screenshot-taken', {
+                success: true,
+                mouseClickCount: mouseCount,
+                keyboardPressCount: keyboardCount,
+                resetInfo: { mouseClicks: mouseCount, keyPresses: keyboardCount }
+            });
+            
+            return { 
+                ...result, 
+                resetInfo: { mouseClicks: mouseCount, keyPresses: keyboardCount },
                 countersReset: true
+            };
+        } else {
+            console.log('Screenshot failed, keeping counters:', { keyboardCount, mouseCount });
+            
+            // Emit screenshot taken event with error
+            mainWindow?.webContents.send('screenshot-taken', {
+                success: false,
+                error: result.error,
+                mouseClickCount: mouseCount,
+                keyboardPressCount: keyboardCount
+            });
+            
+            return { 
+                ...result,
+                countersReset: false
             };
         }
 
-        return result;
     } catch (error) {
         console.error('Error in takeScreenshot:', error);
-        return {
+        
+        // Emit screenshot taken event even on error
+        mainWindow?.webContents.send('screenshot-taken', {
             success: false,
             error: error.message,
-            savedLocally: false
+            mouseClickCount: currentMouseCount,
+            keyboardPressCount: currentKeyboardCount
+        });
+        
+        return { 
+            success: false, 
+            error: error.message,
+            savedLocally: false,
+            countersReset: false
         };
     }
 }
@@ -954,33 +1102,37 @@ function startTracking() {
     if (isTracking) return;
     isTracking = true;
 
+    // Reset counters when starting tracking
+    currentMouseCount = 0;
+    currentKeyboardCount = 0;
+    mouseClickCount = 0;
+    keyboardPressCount = 0;
+
     uIOhook.start();
+    
+    // Start activity tracking for postProjectV2
+    startActivityTracking();
+    
     const firstDelay = Math.floor(Math.random() * SCREENSHOT_INTERVAL);
     console.log(`🕓 First screenshot will be taken in ${Math.floor(firstDelay / 1000)} seconds`);
 
     setTimeout(() => {
-        if (typeof mouseClickCount !== 'undefined' && typeof keyboardPressCount !== 'undefined') {
-            takeScreenshot(mouseClickCount, keyboardPressCount);
-        }
+        takeScreenshot();
     }, firstDelay);
-    // Set up the recurring interval every 10 minutes
+    
+    // Set up the recurring interval
     trackingInterval = setInterval(() => {
         const randomDelay = Math.floor(Math.random() * SCREENSHOT_INTERVAL);
-
         console.log(`🕓 Next screenshot will be taken in ${Math.floor(randomDelay / 1000)} seconds`);
 
         setTimeout(() => {
-            if (typeof mouseClickCount !== 'undefined' && typeof keyboardPressCount !== 'undefined') {
-                takeScreenshot(mouseClickCount, keyboardPressCount);
-            }
+            takeScreenshot();
         }, randomDelay);
     }, SCREENSHOT_INTERVAL);
 
-    // Mouse move event
+    // Mouse move event (no counting needed)
     uIOhook.on('mousemove', (event) => {
         const now = Date.now();
-
-        // Throttle mouse move events
         if (now - lastMouseEventSent >= MOUSE_MOVE_THROTTLE_MS) {
             lastMouseEventSent = now;
             lastMousePosition = { x: event.x, y: event.y };
@@ -992,9 +1144,12 @@ function startTracking() {
         }
     });
 
-    // Mouse click event
+    // Mouse click event - increment both counters
     uIOhook.on('click', (event) => {
-        mouseClickCount++;
+        currentMouseCount++; // For screenshot data
+        activityData.currentMinuteMouse++; // For activity tracking
+        mouseClickCount++; // Legacy counter
+        
         sendGlobalEvent({
             type: 'mouseclick',
             button: event.button,
@@ -1003,9 +1158,12 @@ function startTracking() {
         });
     });
 
-    // Key press event
+    // Keyboard press event - increment both counters
     uIOhook.on('keydown', (event) => {
-        keyboardPressCount++;
+        currentKeyboardCount++; // For screenshot data
+        activityData.currentMinuteKeyboard++; // For activity tracking
+        keyboardPressCount++; // Legacy counter
+        
         sendGlobalEvent({
             type: 'keydown',
             keycode: event.keycode,

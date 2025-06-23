@@ -7,7 +7,7 @@
   "homepage": "./",
   "scripts": {
     "start": "react-scripts start",
-    "build": "react-scripts build",
+    "build": "react-scripts build && electron .",
     "test": "react-scripts test",
     "electron": "electron .",
     "dev": "concurrently \"npm start\" \"wait-on http://localhost:3102 && electron .\"",

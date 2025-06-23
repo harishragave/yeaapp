@@ -290,9 +290,6 @@ function App() {
         // Even if there's an error, we still want to update the UI
         handlePauseTracking();
       }
-      
-      setEvents([]);
-      setStats({ mouseClicks: 0, keyPresses: 0, mouseMoves: 0 });
     } catch (err) {
       console.error('Error pausing timer:', err);
     }
@@ -1098,7 +1095,7 @@ function App() {
           <button
             onClick={stopTimer}
             className="reset-all-btn"
-            disabled={!isTracking && events.length === 0}
+            disabled={!isTracking && !timerRunning && events.length === 0}
           >
             Punch Out
           </button>
