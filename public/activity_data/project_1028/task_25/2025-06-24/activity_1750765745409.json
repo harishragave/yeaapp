@@ -1,0 +1,63 @@
+{
+  "projectID": 1028,
+  "userID": 1,
+  "taskID": 25,
+  "screenshotTimeStamp": "2025-06-24T11:49:05.195Z",
+  "activeJSON": [
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 7,
+      "mouse": 14,
+      "active": 1
+    }
+  ],
+  "activeFlag": 1,
+  "activeMins": 1,
+  "deletedFlag": 0,
+  "createdAt": "2025-06-24T11:49:05.409Z",
+  "modifiedAt": "2025-06-24T11:49:05.409Z"
+}

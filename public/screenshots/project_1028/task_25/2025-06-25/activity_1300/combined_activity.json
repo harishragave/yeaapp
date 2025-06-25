@@ -1,0 +1,64 @@
+{
+  "projectID": 1028,
+  "userID": 1,
+  "taskID": 25,
+  "blockStartTime": "2025-06-25T07:30:00.000Z",
+  "blockEndTime": "2025-06-25T07:40:00.000Z",
+  "activeJSON": [
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    },
+    {
+      "keyboard": 0,
+      "mouse": 0,
+      "active": 0
+    }
+  ],
+  "activeFlag": 0,
+  "activeMins": 0,
+  "deletedFlag": 0,
+  "activeMemo": "Activity block completed: 0/10 minutes active",
+  "createdAt": "2025-06-25T07:40:34.167Z"
+}
