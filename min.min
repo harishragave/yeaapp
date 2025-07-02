@@ -1,0 +1,994 @@
+const electron = require('electron');
+const { app, BrowserWindow, ipcMain } = electron;
+const { uIOhook, UiohookKey } = require('uiohook-napi');
+const { desktopCapturer, screen } = electron;
+const path = require('path');
+const fs = require('fs-extra');
+const axios = require('axios');
+
+// Verify Electron app is loaded
+if (!app) {
+    console.error('Failed to load Electron app module. Make sure Electron is installed correctly.');
+    process.exit(1);
+}
+
+let mainWindow;
+let isTracking = false;
+let trackingInterval;
+
+// Activity tracking variables - Fixed structure
+const ACTIVITY_INTERVAL_MS = 10 * 1000; // 10 seconds
+const BLOCK_DURATION_MS = 2 * 60 * 1000; // 2 minutes
+let activityIntervalId = null;
+let blockIntervalId = null;
+
+// Block timing variables
+let currentBlockStartTime = null;
+let currentBlockFolder = null;
+let screenshotTimeout = null;
+let screenshotTaken = false;
+
+// Current activity counters (reset every 10 seconds)
+let currentIntervalKeyboard = 0;
+let currentIntervalMouse = 0;
+
+// Activity data structure for 2-minute blocks
+let activityData = {
+    projectID: null,
+    userID: null,
+    taskID: null,
+    blockStartTime: null,
+    createdAt: null,
+    activeJSON: Array(12).fill({ keyboard: 0, mouse: 0, active: 0 }), // 12 slots for 2-minute block (10 seconds each)
+    activeFlag: 1,
+    activeMins: 0,
+    activeMemo: ''
+};
+
+// Function to get current block information
+function getCurrentBlockInfo() {
+    const now = new Date();
+    const blockStart = new Date(Math.floor(now.getTime() / BLOCK_DURATION_MS) * BLOCK_DURATION_MS);
+    const blockEnd = new Date(blockStart.getTime() + BLOCK_DURATION_MS);
+    return {
+        blockStart: blockStart.toISOString(),
+        blockEnd: blockEnd.toISOString(),
+        blockStartTime: blockStart.getTime()
+    };
+}
+
+// Function to create activity folder path
+function getActivityFolderPath() {
+    const blockInfo = getCurrentBlockInfo();
+    const dateStr = blockInfo.blockStart.split('T')[0];  // 2025-06-26
+    const timeStr = blockInfo.blockStart.split('T')[1].slice(0, 5).replace(':', ''); // 1056
+
+    return path.join(
+        __dirname, 'public', 'activity',
+        `activity-${currentProjectID}-${currentTaskID}-${dateStr}-${timeStr}`
+    );
+}
+async function storeBlockForRetry(blockData) {
+    try {
+        const retryFolder = path.join(__dirname, 'public', 'retry_blocks');
+        await fs.ensureDir(retryFolder);
+
+        const timestamp = new Date().getTime();
+        const retryFile = path.join(retryFolder, `block_${timestamp}.json`);
+
+        await fs.writeJson(retryFile, {
+            ...blockData,
+            retryReason: 'missing_screenshot',
+            originalActivityPath: currentBlockFolder,
+            originalScreenshotPath: getScreenshotFolderPath(),
+            createdAt: new Date().toISOString()
+        }, { spaces: 2 });
+
+        console.log('Block stored for retry:', retryFile);
+    } catch (error) {
+        console.error('Error storing block for retry:', error);
+    }
+}
+// Function to create screenshot folder path
+function getScreenshotFolderPath() {
+    const blockInfo = getCurrentBlockInfo();
+    const dateStr = blockInfo.blockStart.split('T')[0];  // 2025-06-26
+    const timeStr = blockInfo.blockStart.split('T')[1].slice(0, 5).replace(':', ''); // 1056
+
+    return path.join(
+        __dirname, 'public', 'screenshots',
+        `project_${currentProjectID}`,
+        `task_${currentTaskID}`,
+        dateStr,
+        `block_${timeStr}`
+    );
+}
+
+// ISSUE IDENTIFIED: Your saveActHoursLocally function saves to a different path structure
+// Current path: D:\desapp-main\public\screenshots\project_1027\task_24\taskData_24_1750935874838.json
+// But getScreenshotFolderPath creates: project_1027\task_24\2025-06-26\block_1056\
+
+// Fixed saveActHoursLocally function to match the structure you're using
+async function saveActHoursLocally(projectID, taskID, data) {
+    try {
+        // Use getScreenshotFolderPath to ensure consistent path structure
+        const screenshotsDir = getScreenshotFolderPath();
+
+        try {
+            // Ensure the directory exists
+            await fs.ensureDir(screenshotsDir);
+
+            // Prepare the file path with timestamp
+            const filePath = path.join(screenshotsDir, `taskData_${taskID}.json`);
+
+            // Prepare data to save
+            const dataToSave = {
+                ...data,
+                taskID,
+                projectID,
+                lastUpdated: new Date().toISOString(),
+                actHours: data.actHours,
+                isExceeded: data.isExceeded
+            };
+
+            // Save to file
+            await fs.writeJson(filePath, dataToSave, { spaces: 2 });
+            console.log(`ActHours data saved locally at: ${filePath}`);
+            return true;
+        } catch (dirError) {
+            console.error('Error creating directory or saving file:', dirError);
+            return false;
+        }
+    } catch (error) {
+        console.error('Error in saveActHoursLocally:', error);
+        return false;
+    }
+}
+
+// Function to schedule random screenshot within 2-minute block
+function scheduleRandomScreenshot() {
+    // Clear any existing screenshot timeout
+    if (screenshotTimeout) {
+        clearTimeout(screenshotTimeout);
+        screenshotTimeout = null;
+    }
+
+    // Generate random time within the 2-minute block (5-115 seconds to avoid edge cases)
+    const randomSeconds = Math.floor(Math.random() * 110) + 5; // Random between 5-115 seconds
+    const randomDelay = randomSeconds * 1000;
+
+    console.log(`Screenshot scheduled in ${Math.floor(randomSeconds / 60)}m ${randomSeconds % 60}s`);
+
+    screenshotTimeout = setTimeout(async () => {
+        if (isTracking && !screenshotTaken) {
+            try {
+                const screenshotPath = await takeScreenshot();
+                screenshotTaken = true;
+                console.log(`Screenshot taken at ${new Date().toISOString()}: ${screenshotPath}`);
+            } catch (error) {
+                console.error('Error taking screenshot:', error);
+            }
+        }
+        screenshotTimeout = null;
+    }, randomDelay);
+}
+
+// Function to start a new 2-minute block
+// Alternative approach: Always take a screenshot at the start of each block
+// This ensures you always have screenshot data to send to the server
+
+function startNewBlock() {
+    const now = new Date();
+    currentBlockStartTime = now;
+    screenshotTaken = false;
+
+    // Initialize activity data for new block
+    activityData = {
+        projectID: currentProjectID,
+        userID: currentUserID,
+        taskID: currentTaskID,
+        blockStartTime: now.toISOString(),
+        createdAt: now.toISOString(),
+        activeJSON: Array(12).fill().map(() => ({ keyboard: 0, mouse: 0, active: 0 })),
+        activeFlag: 1,
+        activeMins: 0,
+        activeMemo: ''
+    };
+
+    // Create block folder
+    const blockInfo = getCurrentBlockInfo();
+    const dateStr = blockInfo.blockStart.split('T')[0];
+    const timeStr = blockInfo.blockStart.split('T')[1].slice(0, 5).replace(':', '');
+
+    currentBlockFolder = path.join(
+        __dirname, 'public', 'activity',
+        `activity-${currentProjectID}-${currentTaskID}-${dateStr}-${timeStr}`
+    );
+
+    fs.ensureDir(currentBlockFolder).then(() => {
+        console.log('Created block folder:', currentBlockFolder);
+    }).catch(err => {
+        console.error('Error creating block folder:', err);
+    });
+
+    // Take screenshot immediately at block start (Option 1)
+    // This ensures every block has a screenshot
+    takeScreenshot().then(() => {
+        console.log('Block start screenshot taken');
+    }).catch(err => {
+        console.error('Error taking block start screenshot:', err);
+        // Schedule random screenshot as fallback
+        scheduleRandomScreenshot();
+    });
+
+    // OR use the random screenshot approach (Option 2)
+    // scheduleRandomScreenshot();
+
+    console.log('Started new 2-minute block:', activityData.blockStartTime);
+}
+
+// Improved finish block function that handles missing screenshots
+async function finishCurrentBlock() {
+    if (!currentBlockStartTime) return;
+
+    try {
+        console.log('Finishing current 2-minute block...');
+
+        // Calculate total active intervals (out of 12)
+        const activeIntervals = activityData.activeJSON.filter(interval => interval.active === 1).length;
+        const activeMins = Math.round((activeIntervals / 12) * 2 * 100) / 100;
+
+        // Update activity data
+        activityData.activeFlag = activeIntervals > 0 ? 1 : 0;
+        activityData.activeMins = activeMins;
+        activityData.activeMemo = `Activity block completed: ${activeIntervals}/12 intervals active (${activeMins} minutes)`;
+
+        // Save combined activity data
+        const combinedActivityFile = path.join(currentBlockFolder, 'combined_activity.json');
+        const combinedData = {
+            projectID: currentProjectID,
+            userID: currentUserID,
+            taskID: currentTaskID,
+            blockStartTime: currentBlockStartTime.toISOString(),
+            blockEndTime: new Date().toISOString(),
+            activeJSON: [...activityData.activeJSON],
+            activeFlag: activityData.activeFlag,
+            activeMins: activityData.activeMins,
+            deletedFlag: 0,
+            activeMemo: activityData.activeMemo,
+            createdAt: activityData.createdAt,
+            modifiedAt: new Date().toISOString()
+        };
+
+        await fs.writeJson(combinedActivityFile, combinedData, { spaces: 2 });
+        console.log('Saved combined activity data:', combinedActivityFile);
+
+        // Check if screenshot exists before sending to server
+        const screenshotFile = path.join(getScreenshotFolderPath(), 'screenshot.json');
+        const hasScreenshot = await fs.pathExists(screenshotFile);
+
+        if (hasScreenshot) {
+            // Send block to server only if screenshot exists
+            await sendBlockToServer(combinedData);
+        } else {
+            console.log('No screenshot available, storing block locally for later processing');
+            // You might want to implement a retry mechanism here
+            // or store these blocks in a separate queue for later retry
+        }
+
+    } catch (error) {
+        console.error('Error finishing block:', error);
+    }
+}
+
+// Add a function to handle blocks without screenshots (optional)
+async function storeBlockForRetry(blockData) {
+    try {
+        const retryFolder = path.join(__dirname, 'public', 'retry_blocks');
+        await fs.ensureDir(retryFolder);
+
+        const timestamp = new Date().getTime();
+        const retryFile = path.join(retryFolder, `block_${timestamp}.json`);
+
+        await fs.writeJson(retryFile, {
+            ...blockData,
+            retryReason: 'missing_screenshot',
+            createdAt: new Date().toISOString()
+        }, { spaces: 2 });
+
+        console.log('Block stored for retry:', retryFile);
+    } catch (error) {
+        console.error('Error storing block for retry:', error);
+    }
+}
+// Function to finish current 2-minute block
+async function finishCurrentBlock() {
+    if (!currentBlockStartTime) return;
+
+    try {
+        console.log('Finishing current 2-minute block...');
+
+        // Calculate total active intervals (out of 12)
+        const activeIntervals = activityData.activeJSON.filter(interval => interval.active === 1).length;
+        const activeMins = Math.round((activeIntervals / 12) * 2 * 100) / 100; // Convert to minutes with 2 decimal places
+
+        // Update activity data
+        activityData.activeFlag = activeIntervals > 0 ? 1 : 0;
+        activityData.activeMins = activeMins;
+        activityData.activeMemo = `Activity block completed: ${activeIntervals}/12 intervals active (${activeMins} minutes)`;
+
+        // Save combined activity data (this is the ONLY file we save for activity)
+        const combinedActivityFile = path.join(currentBlockFolder, 'combined_activity.json');
+        const combinedData = {
+            projectID: currentProjectID,
+            userID: currentUserID,
+            taskID: currentTaskID,
+            blockStartTime: currentBlockStartTime.toISOString(),
+            blockEndTime: new Date().toISOString(),
+            activeJSON: [...activityData.activeJSON],
+            activeFlag: activityData.activeFlag,
+            activeMins: activityData.activeMins,
+            deletedFlag: 0,
+            activeMemo: activityData.activeMemo,
+            createdAt: activityData.createdAt,
+            modifiedAt: new Date().toISOString()
+        };
+
+        await fs.writeJson(combinedActivityFile, combinedData, { spaces: 2 });
+        console.log('Saved combined activity data:', combinedActivityFile);
+
+        // Send block to server
+        await sendBlockToServer(combinedData);
+
+    } catch (error) {
+        console.error('Error finishing block:', error);
+    }
+}
+
+// Function to start activity tracking
+async function startActivityTracking() {
+    if (isTracking) {
+        console.log('Activity tracking is already running');
+        return;
+    }
+
+    try {
+        isTracking = true;
+
+        // Start first block
+        startNewBlock();
+
+        console.log('Starting activity tracking...');
+
+        // Activity interval - runs every 10 seconds
+        activityIntervalId = setInterval(async () => {
+            try {
+                const now = new Date();
+                const elapsedMs = now.getTime() - currentBlockStartTime.getTime();
+                const intervalIndex = Math.floor(elapsedMs / 10000); // 10-second intervals
+
+                console.log('=== Activity Tracking Interval ===');
+                console.log('Current Time:', now.toISOString());
+                console.log('Block Start:', currentBlockStartTime.toISOString());
+                console.log('Interval Index:', intervalIndex);
+                console.log('Keyboard:', currentIntervalKeyboard, 'Mouse:', currentIntervalMouse);
+
+                // Save current interval's activity if within the 2-minute block
+                if (intervalIndex >= 0 && intervalIndex < 12) {
+                    const currentActivity = {
+                        keyboard: currentIntervalKeyboard,
+                        mouse: currentIntervalMouse,
+                        active: (currentIntervalKeyboard > 0 || currentIntervalMouse > 0) ? 1 : 0
+                    };
+
+                    // Update activeJSON array
+                    activityData.activeJSON[intervalIndex] = currentActivity;
+                    console.log(`Updated activeJSON[${intervalIndex}]:`, currentActivity);
+
+                    // Save combined activity data (only file we maintain)
+                    const combinedFile = path.join(currentBlockFolder, 'combined_activity.json');
+                    const tempData = {
+                        ...activityData,
+                        modifiedAt: new Date().toISOString()
+                    };
+                    await fs.writeJson(combinedFile, tempData, { spaces: 2 });
+                }
+
+                // Reset interval counters
+                currentIntervalKeyboard = 0;
+                currentIntervalMouse = 0;
+
+                // Send activity update to renderer
+                mainWindow?.webContents.send('activity-update', {
+                    type: 'interval',
+                    intervalIndex: intervalIndex,
+                    activeJSON: activityData.activeJSON
+                });
+
+            } catch (error) {
+                console.error('Error in activity tracking interval:', error);
+            }
+        }, ACTIVITY_INTERVAL_MS);
+
+        // Block interval - runs every 2 minutes to start new blocks
+        blockIntervalId = setInterval(async () => {
+            try {
+                console.log('2-minute block completed, starting new block...');
+
+                // Finish current block
+                await finishCurrentBlock();
+
+                // Start new block
+                startNewBlock();
+
+            } catch (error) {
+                console.error('Error in block interval:', error);
+            }
+        }, BLOCK_DURATION_MS);
+
+    } catch (error) {
+        console.error('Error starting activity tracking:', error);
+        isTracking = false;
+    }
+}
+
+async function sendBlockToServer(blockData) {
+    try {
+        // Read screenshot data - using the correct path structure
+        let screenshotData = null;
+        const screenshotFile = path.join(getScreenshotFolderPath(), 'screenshot.json');
+
+        if (await fs.pathExists(screenshotFile)) {
+            screenshotData = await fs.readJson(screenshotFile);
+        }
+
+        // Read activity data - using the correct path structure
+        let activityData = null;
+        const activityFile = path.join(currentBlockFolder, 'combined_activity.json'); // Use currentBlockFolder directly
+
+        if (await fs.pathExists(activityFile)) {
+            try {
+                activityData = await fs.readJson(activityFile);
+                console.log('Activity data loaded:', activityData);
+            } catch (err) {
+                console.error('Error reading activity data:', err);
+            }
+        }
+
+        // Check if we have required screenshot data
+        if (!screenshotData || !screenshotData.imageURL || !screenshotData.thumbNailURL) {
+            console.log('No screenshot data available, skipping server send for this block');
+            // Store this block locally for later retry
+            await storeBlockForRetry(blockData);
+            return;
+        }
+
+        // Validate that imageURL and thumbNailURL are proper base64 data
+        const imageUrlValid = screenshotData.imageURL.match(/^data:image\/(png|jpeg|jpg);base64,(.+)$/);
+        const thumbnailUrlValid = screenshotData.thumbNailURL.match(/^data:image\/(png|jpeg|jpg);base64,(.+)$/);
+
+        if (!imageUrlValid || !thumbnailUrlValid) {
+            console.log('Invalid image format, skipping server send for this block');
+            await storeBlockForRetry(blockData);
+            return;
+        }
+
+        // Create payload matching database schema
+        const payload = {
+            projectID: parseInt(blockData.projectID),
+            userID: parseInt(blockData.userID),
+            taskID: parseInt(blockData.taskID),
+            screenshotTimeStamp: screenshotData.timestamp,
+            activeJSON: activityData?.activeJSON || [],
+            calcTimeStamp: new Date(blockData.createdAt).toISOString(),
+            activeFlag: parseInt(blockData.activeFlag),
+            activeMins: parseFloat(blockData.activeMins),
+            deletedFlag: 0,
+            activeMemo: blockData.activeMemo,
+            imageURL: screenshotData.imageURL,
+            thumbNailURL: screenshotData.thumbNailURL,
+            createdAt: new Date(blockData.createdAt).toISOString(),
+            modifiedAt: new Date().toISOString()
+        };
+
+        console.log('Sending 2-minute block to server with screenshot data');
+
+        const response = await fetch('https://vw.aisrv.in/node_backend/postProjectV1', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+            console.log('2-minute block sent to server successfully');
+
+            // Clean up the block folders after successful send
+            try {
+                if (currentBlockFolder && await fs.pathExists(currentBlockFolder)) {
+                    await fs.remove(currentBlockFolder);
+                }
+                const screenshotFolder = getScreenshotFolderPath();
+                if (await fs.pathExists(screenshotFolder)) {
+                    await fs.remove(screenshotFolder);
+                }
+                console.log('Cleaned up local files after successful server send');
+
+                // Notify renderer of successful sync
+                mainWindow?.webContents.send('block-synced', {
+                    timestamp: new Date().toISOString(),
+                    blockStartTime: blockData.blockStartTime,
+                    activeMins: blockData.activeMins
+                });
+            } catch (cleanupError) {
+                console.error('Error cleaning up local files:', cleanupError);
+            }
+
+        } else {
+            const errorText = await response.text();
+            console.error('Failed to send block to server:', response.status, errorText);
+
+            // Don't delete files if server send failed
+            console.log('Keeping local files due to server send failure');
+        }
+
+    } catch (error) {
+        console.error('Error sending block to server:', error);
+        // Don't delete files if there's an error
+    }
+}
+
+
+// Function to take screenshot
+async function takeScreenshot() {
+    try {
+        const screenshotFolderPath = getScreenshotFolderPath();
+        await fs.ensureDir(screenshotFolderPath);
+
+        // Get screenshot from desktop capturer
+        const sources = await desktopCapturer.getSources({
+            types: ['screen'],
+            thumbnailSize: { width: 1920, height: 1080 }
+        });
+
+        if (sources.length > 0) {
+            const screenshot = sources[0];
+            const screenshotBase64 = screenshot.thumbnail.toDataURL();
+
+            // Save screenshot as base64 in JSON
+            const screenshotData = {
+                timestamp: new Date().toISOString(),
+                projectID: currentProjectID,
+                taskID: currentTaskID,
+                userID: currentUserID,
+                imageURL: screenshotBase64,
+                thumbNailURL: screenshotBase64, // Using same for now
+                blockStartTime: currentBlockStartTime.toISOString(),
+                screenshotTakenAt: new Date().toISOString()
+            };
+
+            const screenshotFile = path.join(screenshotFolderPath, 'screenshot.json');
+            await fs.writeJson(screenshotFile, screenshotData, { spaces: 2 });
+
+            console.log(`Screenshot saved to: ${screenshotFile}`);
+
+            // Emit success event
+            mainWindow?.webContents.send('screenshot-success', {
+                timestamp: new Date().toISOString(),
+                projectID: currentProjectID,
+                taskID: currentTaskID,
+                screenshotPath: screenshotFile
+            });
+
+            return screenshotFile;
+        }
+    } catch (error) {
+        console.error('Error taking screenshot:', error);
+        throw error;
+    }
+}
+
+function sendGlobalEvent(event) {
+    if (!event.type) {
+        console.error('Attempted to send event without type:', event);
+        return;
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('global-event', event);
+    }
+}
+
+// Start tracking function
+function startTracking() {
+    if (isTracking) return;
+
+    try {
+        // Reset activity counters
+        currentIntervalKeyboard = 0;
+        currentIntervalMouse = 0;
+
+        // Initialize activity tracking
+        startActivityTracking();
+
+        // Set up input event listeners
+        uIOhook.on('mousedown', (event) => {
+            currentIntervalMouse += 1;
+            // Send mouse click count to renderer
+            mainWindow?.webContents.send('activity-update', {
+                type: 'mouseclick',
+                count: currentIntervalMouse
+            });
+            console.log('Mouse down:', event.button, 'Total:', currentIntervalMouse);
+        });
+
+        uIOhook.on('keydown', (event) => {
+            currentIntervalKeyboard += 1;
+            // Send keyboard count to renderer
+            mainWindow?.webContents.send('activity-update', {
+                type: 'keydown',
+                count: currentIntervalKeyboard
+            });
+            console.log('Key down:', event.keycode, 'Total:', currentIntervalKeyboard);
+        });
+
+        // Start uIOhook
+        uIOhook.start();
+
+        // Send tracking status update
+        mainWindow?.webContents.send('tracking-status', { isTracking: true });
+
+    } catch (error) {
+        console.error('Error starting tracking:', error);
+        isTracking = false;
+        mainWindow?.webContents.send('tracking-status', { isTracking: false, error: error.message });
+    }
+}
+
+// Stop tracking function
+function stopTracking() {
+    if (!isTracking) return;
+    isTracking = false;
+
+    try {
+        // Finish current block if tracking is stopped mid-block
+        if (currentBlockStartTime) {
+            console.log('Finishing current block on stopTracking');
+            finishCurrentBlock();
+        }
+
+        // Clear intervals
+        if (activityIntervalId) {
+            clearInterval(activityIntervalId);
+            activityIntervalId = null;
+        }
+        if (blockIntervalId) {
+            clearInterval(blockIntervalId);
+            blockIntervalId = null;
+        }
+
+        // Clear screenshot timeout
+        if (screenshotTimeout) {
+            clearTimeout(screenshotTimeout);
+            screenshotTimeout = null;
+        }
+
+        // Clean up uIOhook
+        uIOhook.removeAllListeners();
+        uIOhook.stop();
+        console.log('Stopped tracking global input events');
+
+        // Reset block variables
+        currentBlockStartTime = null;
+        currentBlockFolder = null;
+        screenshotTaken = false;
+        currentIntervalKeyboard = 0;
+        currentIntervalMouse = 0;
+
+        activityData = {
+            activeJSON: Array(12).fill().map(() => ({ keyboard: 0, mouse: 0, active: 0 }))
+        };
+
+        // Send tracking status update
+        if (mainWindow) {
+            mainWindow.webContents.send('tracking-status', { isTracking: false });
+        }
+
+    } catch (error) {
+        console.error('Error stopping tracking:', error);
+        if (mainWindow) {
+            mainWindow.webContents.send('tracking-status', {
+                isTracking: false,
+                error: error.message
+            });
+        }
+    }
+}
+
+// Add new IPC handlers for window controls
+ipcMain.handle('window-minimize', () => {
+    if (mainWindow) {
+        mainWindow.minimize();
+    }
+});
+
+ipcMain.handle('window-close', () => {
+    if (mainWindow) {
+        stopTracking();
+        mainWindow.close();
+    }
+});
+
+// Add IPC handler for pause functionality
+ipcMain.handle('pause-tracking', () => {
+    if (mainWindow) {
+        mainWindow.webContents.send('tracking-paused', { isPaused: true });
+    }
+    console.log('Tracking paused but timers continue running');
+    return { success: true, isPaused: true };
+});
+
+// Add IPC handler for punch out during pause
+ipcMain.handle('punch-out', () => {
+    console.log('Processing punch out request...');
+    stopTracking();
+    uIOhook.stop();
+    if (mainWindow) {
+        mainWindow.webContents.send('tracking-stopped');
+    }
+    return { success: true, message: 'Punched out successfully' };
+});
+
+ipcMain.handle('resume-tracking', () => {
+    if (mainWindow) {
+        mainWindow.webContents.send('tracking-resumed', { isPaused: false });
+    }
+    return { success: true, isPaused: false };
+});
+
+// Modify the will-quit handler
+app.on('will-quit', () => {
+    console.log('App quitting... cleaning up tracking');
+    stopTracking();
+    uIOhook.stop();
+});
+
+// Function to save act hours locally
+async function saveActHoursLocally(projectID, taskID, data) {
+    try {
+        // Create the folder path: public/screenshots/project_{projectID}/task_{taskID}/
+        const screenshotsDir = path.join(
+            'public',
+            'screenshots',
+            `project_${projectID}`,
+            `task_${taskID}`,
+        );
+
+        try {
+            // Ensure the directory exists
+            await fs.ensureDir(screenshotsDir);
+
+            // Prepare the file path with timestamp
+            const timestamp = new Date().getTime();
+            const filePath = path.join(screenshotsDir, `taskData_${taskID}_${timestamp}.json`);
+
+            // Prepare data to save
+            const dataToSave = {
+                ...data,
+                taskID,
+                projectID,
+                lastUpdated: new Date().toISOString(),
+                actHours: data.actHours,
+                isExceeded: data.isExceeded,
+                timestamp: timestamp
+            };
+
+            // Save to file
+            await fs.writeJson(filePath, dataToSave, { spaces: 2 });
+            console.log(`ActHours data saved locally at: ${filePath}`);
+            return true;
+        } catch (dirError) {
+            console.error('Error creating directory or saving file:', dirError);
+            return false;
+        }
+    } catch (error) {
+        console.error('Error in saveActHoursLocally:', error);
+        return false;
+    }
+}
+
+async function loadActHoursLocally() {
+    try {
+        const screenshotsDir = path.join(__dirname, 'public', 'screenshots'); // Added __dirname
+        const dirExists = await fs.pathExists(screenshotsDir);
+        if (!dirExists) {
+            console.log('Screenshots directory does not exist, returning empty data');
+            return {};
+        }
+
+        const result = {};
+        const projectDirs = await fs.readdir(screenshotsDir);
+
+        for (const projectDir of projectDirs) {
+            if (!projectDir.startsWith('project_')) continue;
+
+            const projectPath = path.join(screenshotsDir, projectDir);
+            const taskDirs = await fs.readdir(projectPath);
+
+            for (const taskDir of taskDirs) {
+                if (!taskDir.startsWith('task_')) continue;
+
+                const taskPath = path.join(projectPath, taskDir);
+                const files = (await fs.readdir(taskPath)).filter(f => f.startsWith('taskData_') && f.endsWith('.json'));
+
+                if (files.length > 0) {
+                    // Get the most recent file based on timestamp in filename
+                    const latestFile = files.sort((a, b) => {
+                        const timestampA = parseInt(a.split('_').pop().replace('.json', ''));
+                        const timestampB = parseInt(b.split('_').pop().replace('.json', ''));
+                        return timestampB - timestampA; // Sort descending (most recent first)
+                    })[0];
+
+                    try {
+                        const fileData = await fs.readJson(path.join(taskPath, latestFile));
+                        const taskId = fileData.taskID;
+                        if (taskId) {
+                            result[taskId] = {
+                                actHours: fileData.actHours,
+                                isExceeded: fileData.isExceeded
+                            };
+                        }
+                    } catch (err) {
+                        console.error(`Error reading file ${latestFile}:`, err);
+                    }
+                }
+            }
+        }
+
+        return result;
+    } catch (error) {
+        console.error('Error loading actHours data:', error);
+        return {};
+    }
+}
+// Initialize iohook
+
+// Start the app
+if (app) {
+    app.whenReady().then(() => {
+        // Register IPC handlers
+        ipcMain.handle('start-tracking', async () => {
+            startTracking();
+            return { success: true, isTracking };
+        });
+
+        ipcMain.handle('stop-tracking', async () => {
+            stopTracking();
+            return { success: true, isTracking };
+        });
+
+        ipcMain.on('tracking-status', (event, data) => {
+            mainWindow.webContents.send('tracking-status', data);
+        });
+
+        ipcMain.on('tracking-error', (event, error) => {
+            mainWindow.webContents.send('tracking-error', error);
+        });
+
+        ipcMain.handle('get-tracking-status', async () => {
+            return { isTracking };
+        });
+
+        ipcMain.handle('set-tracking-context', (event, context) => {
+            currentProjectID = context.projectID;
+            currentUserID = context.userID;
+
+            // Priority order: subactionItemID > actionItemID > subtaskID > taskID
+            if (context.subactionItemID) {
+                currentTaskID = context.subactionItemID;
+                console.log('Tracking subaction item with ID:', currentTaskID);
+            } else if (context.actionItemID) {
+                currentTaskID = context.actionItemID;
+                console.log('Tracking action item with ID:', currentTaskID);
+            } else if (context.subtaskID) {
+                currentTaskID = context.subtaskID;
+                console.log('Tracking subtask with ID:', currentTaskID);
+            } else {
+                currentTaskID = context.taskID;
+                console.log('Tracking task with ID:', currentTaskID);
+            }
+
+            return { success: true };
+        });
+
+        ipcMain.handle('take-screenshot', async () => {
+            try {
+                return await takeScreenshot();
+            } catch (error) {
+                console.error('Screenshot IPC failed:', error);
+                mainWindow.webContents.send('tracking-error', {
+                    type: 'api-failure',
+                    message: error.message
+                });
+                return { success: false };
+            }
+        });
+
+        ipcMain.handle('save-act-hours', async (event, { taskId, projectId, actHours, isExceeded }) => {
+            try {
+                const response = await fetch(`https://vw.aisrv.in/node_backend/postProjectV1`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        taskID: taskId,
+                        projectID: projectId,
+                        actHours,
+                        isExceeded
+                    })
+                });
+
+                if (response.ok) {
+                    await saveActHoursLocally(projectId, taskId, {
+                        actHours,
+                        isExceeded,
+                        isSynced: true,
+                        lastServerSync: new Date().toISOString()
+                    });
+                    return { success: true, isLocal: false };
+                }
+
+                throw new Error('Failed to save to server');
+            } catch (error) {
+                console.log('Server save failed, saving locally only');
+                const success = await saveActHoursLocally(projectId, taskId, {
+                    actHours,
+                    isExceeded
+                });
+                return { success, isLocal: true };
+            }
+        });
+
+        ipcMain.handle('load-act-hours', async () => {
+            return await loadActHoursLocally();
+        });
+
+        function createWindow() {
+            mainWindow = new BrowserWindow({
+                width: 600,
+                height: 900,
+                webPreferences: {
+                    nodeIntegration: false,
+                    contextIsolation: true,
+                    preload: path.join(__dirname, 'preload.js')
+                },
+            });
+
+            const startUrl = process.env.ELECTRON_START_URL || `file://${path.join(__dirname, 'build/index.html')}`;
+            mainWindow.loadURL(startUrl);
+
+            if (process.env.NODE_ENV === 'development') {
+                mainWindow.webContents.openDevTools();
+            }
+        }
+
+        createWindow();
+
+        app.on('activate', () => {
+            if (BrowserWindow.getAllWindows().length === 0) {
+                createWindow();
+            }
+        });
+    });
+
+    app.on('window-all-closed', () => {
+        if (process.platform !== 'darwin') {
+            stopTracking();
+            app.quit();
+        }
+    });
+
+    app.on('will-quit', () => {
+        stopTracking();
+        uIOhook.stop();
+    });
+}

@@ -3,9 +3,11 @@ import { ThemeProvider } from './contexts/ThemeContext';
 import { TaskProvider } from './contexts/TaskContext';
 import Navbar from './components/Navbar';
 import SettingsPage from './components/SettingsPage';
+import LoginPage from './components/LoginPage';
 import { CSSTransition } from 'react-transition-group';
 import './App.css';
 import './styles/animations.css';
+import './styles/LoginPage.css';
 import { Keyboard, MousePointerClick } from 'lucide-react';
 
 // Key code mappings for display
@@ -23,6 +25,26 @@ const KEY_CODES = {
 };
 
 function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(() => {
+    // Check if user is logged in from localStorage
+    return !!localStorage.getItem('user');
+  });
+  const [user, setUser] = useState(() => {
+    const savedUser = localStorage.getItem('user');
+    return savedUser ? JSON.parse(savedUser) : null;
+  });
+
+  const handleLogin = (userData) => {
+    setIsLoggedIn(true);
+    setUser(userData);
+  };
+
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setUser(null);
+    localStorage.removeItem('user');
+  };
+
   const [selections, setSelections] = useState({
     project: '',
     task: '',
@@ -1142,40 +1164,44 @@ function App() {
 
   return (
     <ThemeProvider>
-      <TaskProvider>
-        <div className="app">
-          <Navbar
-            title={showSettings ? 'Settings' : (showTracker ? 'Timer' : 'Selection')}
-            onSettingsClick={handleSettingsClick}
-            onQuitClick={handleQuitClick}
-          />
+      {!isLoggedIn ? (
+        <LoginPage onLogin={handleLogin} />
+      ) : (
+        <TaskProvider>
+          <div className="app">
+            <Navbar
+              title={showSettings ? 'Settings' : (showTracker ? 'Timer' : 'Selection')}
+              onSettingsClick={handleSettingsClick}
+              onQuitClick={handleLogout}
+            />
 
-          <CSSTransition
-            in={!showSettings}
-            timeout={300}
-            classNames="slide"
-            unmountOnExit
-          >
-            <div className="main-content">
-              {!showTracker ? renderSelectionUI() : renderTimerUI()}
-            </div>
-          </CSSTransition>
+            <CSSTransition
+              in={!showSettings}
+              timeout={300}
+              classNames="slide"
+              unmountOnExit
+            >
+              <div className="main-content">
+                {!showTracker ? renderSelectionUI() : renderTimerUI()}
+              </div>
+            </CSSTransition>
 
-          <CSSTransition
-            in={showSettings}
-            timeout={300}
-            classNames="slide"
-            unmountOnExit
-          >
-            <div className="settings-container">
-              <SettingsPage
-                onBackClick={handleBackFromSettings}
-                onQuitClick={handleQuitClick}
-              />
-            </div>
-          </CSSTransition>
-        </div>
-      </TaskProvider>
+            <CSSTransition
+              in={showSettings}
+              timeout={300}
+              classNames="slide"
+              unmountOnExit
+            >
+              <div className="settings-container">
+                <SettingsPage
+                  onBackClick={handleBackFromSettings}
+                  onQuitClick={handleLogout}
+                />
+              </div>
+            </CSSTransition>
+          </div>
+        </TaskProvider>
+      )}
     </ThemeProvider>
   );
 }

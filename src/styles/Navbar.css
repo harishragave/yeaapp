@@ -1,102 +1,258 @@
-/* Navbar Styles */
+/* Navbar.css */
 .navbar {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 12px 20px;
-  border-bottom: 1px solid #e5e7eb;
+  justify-content: space-between;
+  padding: 8px 16px;
+  height: 60px;
+  border-bottom: 1px solid;
   position: sticky;
   top: 0;
-  z-index: 100;
-  height: 60px;
+  z-index: 1000;
+  -webkit-app-region: drag; /* Allows dragging the window */
   box-sizing: border-box;
 }
 
-/* Light Theme */
+/* Theme-specific navbar styles */
 .navbar.light {
-  background-color: #fffbeb; /* amber-50 */
-  color: #1f2937; /* gray-900 */
-  border-color: #fde68a; /* amber-200 */
+  background-color: #ffffff;
+  border-bottom-color: #e0e0e0;
+  color: #333333;
 }
 
-/* Dark Theme */
 .navbar.dark {
-  background-color: #111827; /* gray-900 */
+  background-color: #1a1a1a;
+  border-bottom-color: #333333;
   color: #ffffff;
-  border-color: #374151; /* gray-700 */
 }
 
-/* Left side - User info */
+/* User section */
 .navbar-user {
   display: flex;
   align-items: center;
   gap: 8px;
+  position: relative;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+  transition: background-color 0.2s ease;
+  -webkit-app-region: no-drag; /* Prevent dragging on interactive elements */
+}
+
+.navbar-user:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.navbar.dark .navbar-user:hover {
+  background-color: rgba(255, 255, 255, 0.05);
 }
 
 .user-avatar {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background-color: #6b7280; /* gray-500 */
-  color: white;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   display: flex;
   align-items: center;
   justify-content: center;
+  color: white;
+  font-weight: 600;
   font-size: 14px;
-  font-weight: 500;
+  flex-shrink: 0;
 }
 
 .user-name {
-  font-size: 14px;
   font-weight: 500;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
 }
 
-/* Center - Title */
+/* Title */
 .navbar-title {
   font-size: 18px;
   font-weight: 600;
   margin: 0;
-  flex-grow: 1;
   text-align: center;
-  padding: 0 20px;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 16px;
 }
 
-/* Right side - Actions */
+/* Actions section */
 .navbar-actions {
   display: flex;
-  gap: 12px;
+  align-items: center;
+  gap: 8px;
+  -webkit-app-region: no-drag;
 }
 
 .icon-button {
-  background: none;
-  border: none;
-  border-radius: 50%;
-  width: 32px;
-  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 6px;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: all 0.2s ease;
+  background: transparent;
 }
 
-.light .icon-button {
-  color: #4b5563; /* gray-600 */
+.navbar.light .icon-button {
+  color: #666666;
 }
 
-.dark .icon-button {
-  color: #d1d5db; /* gray-300 */
+.navbar.dark .icon-button {
+  color: #cccccc;
 }
 
-.light .icon-button:hover {
-  background-color: #fef3c7; /* amber-100 */
+.icon-button:hover {
+  background-color: rgba(0, 0, 0, 0.08);
+  transform: scale(1.05);
 }
 
-.dark .icon-button:hover {
-  background-color: #374151; /* gray-700 */
+.navbar.dark .icon-button:hover {
+  background-color: rgba(255, 255, 255, 0.08);
 }
 
-.icon-button svg {
-  width: 18px;
-  height: 18px;
+.icon-button:active {
+  transform: scale(0.95);
+}
+
+.icon {
+  transition: all 0.2s ease;
+}
+
+/* User dropdown */
+.user-dropdown {
+  position: absolute;
+  top: 100%;
+  margin-top: 8px;
+  min-width: 200px;
+  border-radius: 8px;
+  border: 1px solid;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 1001;
+  overflow: hidden;
+  animation: dropdownFadeIn 0.2s ease-out;
+}
+
+.user-dropdown.light {
+  background-color: #ffffff;
+  border-color: #e0e0e0;
+}
+
+.user-dropdown.dark {
+  background-color: #2a2a2a;
+  border-color: #444444;
+}
+
+/* Dropdown positioning classes */
+.user-dropdown.dropdown-left {
+  left: 0;
+}
+
+.user-dropdown.dropdown-right {
+  right: 0;
+}
+
+.user-dropdown.dropdown-top {
+  top: auto;
+  bottom: 100%;
+  margin-top: 0;
+  margin-bottom: 8px;
+}
+
+.user-info {
+  padding: 12px;
+}
+
+.user-email {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  font-size: 13px;
+  color: #666666;
+  border-bottom: 1px solid;
+  margin-bottom: 8px;
+}
+
+.navbar.light .user-email {
+  border-bottom-color: #e0e0e0;
+}
+
+.navbar.dark .user-email {
+  color: #cccccc;
+  border-bottom-color: #444444;
+}
+
+.logout-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  border-radius: 4px;
+  transition: background-color 0.2s ease;
+}
+
+.navbar.light .logout-btn {
+  color: #dc3545;
+}
+
+.navbar.dark .logout-btn {
+  color: #ff6b6b;
+}
+
+.logout-btn:hover {
+  background-color: rgba(220, 53, 69, 0.1);
+}
+
+.navbar.dark .logout-btn:hover {
+  background-color: rgba(255, 107, 107, 0.1);
+}
+
+/* Animations */
+@keyframes dropdownFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Responsive adjustments for smaller screens */
+@media (max-width: 480px) {
+  .navbar {
+    padding: 6px 12px;
+    height: 56px;
+  }
+  
+  .navbar-title {
+    font-size: 16px;
+    padding: 0 12px;
+  }
+  
+  .user-name {
+    display: none; /* Hide username on very small screens */
+  }
+  
+  .icon-button {
+    width: 32px;
+    height: 32px;
+  }
 }
